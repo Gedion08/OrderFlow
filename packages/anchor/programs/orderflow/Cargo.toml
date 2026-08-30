@@ -1,0 +1,14 @@
+[package]
+name = "orderflow"
+version = "0.1.0"
+description = "OrderFlow — DCA strategy coordinator on Meteora"
+edition = "2021"
+
+[lib]
+name = "orderflow"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"
+solana-program = "1.18.0"

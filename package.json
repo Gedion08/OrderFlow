@@ -1,0 +1,22 @@
+{
+  "name": "orderflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OrderFlow — self-executing DCA, take-profit and auto-rebalancing terminal powered by Meteora DLMM limit orders.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @orderflow/core && npm run build -w @orderflow/sdk && npm run build -w @orderflow/api && npm run build -w @orderflow/keeper",
+    "build:web": "npm run build -w @orderflow/web",
+    "dev:api": "npm run dev -w @orderflow/api",
+    "dev:keeper": "npm run dev -w @orderflow/keeper",
+    "dev:web": "npm run dev -w @orderflow/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@orderflow/anchor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OrderFlow Solana program (Anchor). Coordinates DCA strategy accounts; swaps are delegated to Meteora DLMM/Zap via CPI.",
+  "scripts": {
+    "build": "anchor build",
+    "test": "anchor test",
+    "typecheck": "echo \"rust program — see anchor/README for anchor build\""
+  }
+}

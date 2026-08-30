@@ -1,0 +1,33 @@
+/**
+ * Seed a demo DCA strategy into the store so the keeper can be observed
+ * working end-to-end (once a KEEPER_PRIVATE_KEY + live RPC are configured).
+ *
+ *   npm run seed -w @orderflow/keeper
+ */
+
+import { DcaStrategy } from '@orderflow/core';
+import { StrategyStore } from './store';
+
+const store = new StrategyStore(process.env.STORE_FILE ?? './data/strategies.json');
+
+const demo: DcaStrategy = {
+  strategyId: `demo-${Date.now()}`,
+  owner: process.env.OWNER_PUBKEY ?? '11111111111111111111111111111111',
+  pool: process.env.POOL_ADDRESS ?? 'REPLACE_WITH_DLMM_POOL_ADDRESS',
+  tokenMint: 'REPLACE_WITH_BASE_MINT',
+  side: 'bid',
+  totalAmount: 1000,
+  totalAmountLabel: '1000 USDC',
+  tranches: 10,
+  intervalSeconds: 3600,
+  minPrice: 120,
+  maxPrice: 210,
+  status: 'scheduled',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  orders: [],
+};
+
+store.upsert(demo);
+console.log(`[seed] wrote strategy ${demo.strategyId}`);
+console.log('[seed] strategy:', JSON.stringify(demo, null, 2));
