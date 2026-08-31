@@ -11,6 +11,7 @@ export type Side = 'bid' | 'ask';
 export interface DcaStrategy {
   strategyId: string;
   owner: string;
+  signature: string;
   /** DLMM LbPair address (public key string). */
   pool: string;
   /** The token being traded (base mint for the pair). */
@@ -28,6 +29,10 @@ export interface DcaStrategy {
   /** Price range bounds (in token X per token Y terms as DLMM exposes). */
   minPrice: number | null;
   maxPrice: number | null;
+  /** Allowed slippage in basis points for rebalance operations. */
+  slippageBps: number;
+  /** Minimum milliseconds between rebalance operations. */
+  rebalanceFrequencyMs: number;
   /** Status of the strategy. */
   status: DcaStatus;
   createdAt: number;

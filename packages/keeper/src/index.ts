@@ -2,12 +2,10 @@ import { loadEnvFromRepo } from '@orderflow/core';
 loadEnvFromRepo();
 
 import { Keeper } from './keeper';
-import { StrategyStore } from './store';
 
 const keeper = new Keeper();
 keeper.start();
 
-// Keep process alive; handle graceful shutdown.
 let shuttingDown = false;
 function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -19,4 +17,4 @@ function shutdown(signal: string) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-export { keeper, StrategyStore };
+export { keeper };

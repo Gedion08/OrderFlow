@@ -14,12 +14,11 @@
  *   - cancel an open limit order
  *   - zap a wallet balance into a DLMM position
  *
- * NOTE ON LIMIT-ORDER ACCOUNTS:
- *   The lb_clmm program treats the `limit_order` account as a *signer*. The
- *   common pattern (used by Meteora tooling) is a deterministic PDA derived
- *   from the lb_pair + owner. For this reference implementation we generate a
- *   fresh signer keypair per order and retain it so the keeper can later claim
- *   fees and cancel. Swap for a canonical PDA in production (see README).
+ * NON-CUSTODIAL MODEL:
+ *   The user's wallet is the `owner` of every limit order. The keeper only
+ *   pays gas (payer/sender) and retains the order signer for fee claims and
+ *   cancels. Order signers are persisted to encrypted disk so keeper restarts
+ *   do not orphan open orders.
  */
 
 import {
@@ -32,7 +31,8 @@ import {
 } from '@solana/web3.js';
 import DLMM from '@meteora-ag/dlmm';
 import BN from 'bn.js';
-import { priceFromBin, BinStep } from '@orderflow/core';
+import { loadConfig, OrderFlowConfig, priceFromBin, BinStep } from '@orderflow/core';
+import { OrderSignerStore } from './order-signer-store';
 
 export type { BinStep };
 
@@ -40,12 +40,17 @@ export class OrderFlowSdk {
   readonly connection: Connection;
   readonly payer: Keypair;
   private readonly dlmmCache = new Map<string, DLMM>();
-  /** Retained signer keypairs for open limit orders (pubkey -> keypair). */
-  private readonly orderSigners = new Map<string, Keypair>();
+  private readonly signerStore: OrderSignerStore;
+  private readonly cfg: OrderFlowConfig;
 
-  constructor(opts: { connection: Connection; payer: Keypair }) {
+  constructor(opts: { connection: Connection; payer: Keypair; signerStore?: OrderSignerStore }) {
     this.connection = opts.connection;
     this.payer = opts.payer;
+    this.cfg = loadConfig();
+    this.signerStore = opts.signerStore ?? new OrderSignerStore(
+      process.env.SIGNER_STORE_FILE ?? './data/order-signers.json.enc',
+      process.env.SIGNER_STORE_KEY ?? '0000000000000000000000000000000000000000000000000000000000000000',
+    );
   }
 
   /** Fetch (and cache) the DLMM client for a pool. */
@@ -81,14 +86,15 @@ export class OrderFlowSdk {
    * Place a multi-bin limit order (DCA tranche) on the book.
    *
    * Each tranche is a single DLMM limit-order account covering `bins` (absolute
-   * bin ids). A fresh signer keypair backs the order and is retained for later
-   * claims/cancels.
+   * bin ids). A fresh signer keypair backs the order and is persisted to
+   * encrypted disk for later claims/cancels.
    *
-   * Amount units: for an ask (sell X), `amount` is in base (X) token raw units.
-   *               for a bid (buy X),   `amount` is in quote (Y) token raw units.
+   * The `owner` is the user's wallet (non-custodial). The keeper is the
+   * `payer` (pays gas) and `sender` (broadcasts).
    */
   async placeLimitOrder(opts: {
     poolAddress: string;
+    owner: PublicKey;
     side: 'bid' | 'ask';
     bins: number[];
     amount: BN;
@@ -103,7 +109,7 @@ export class OrderFlowSdk {
     const bins = opts.bins.length ? opts.bins : [await this.activeBinId(opts.poolAddress)];
 
     const tx = await dlmm.placeLimitOrder({
-      owner: this.payer.publicKey,
+      owner: opts.owner,
       payer: this.payer.publicKey,
       sender: this.payer.publicKey,
       limitOrder: orderSigner.publicKey,
@@ -116,11 +122,13 @@ export class OrderFlowSdk {
 
     tx.sign(this.payer, orderSigner);
     await this.send([tx]);
-    this.orderSigners.set(orderSigner.publicKey.toBase58(), orderSigner);
+
+    const orderPubkey = orderSigner.publicKey.toBase58();
+    this.signerStore.set(orderPubkey, orderSigner);
 
     const binStep = await this.binStepOf(opts.poolAddress);
     return {
-      orderAddress: orderSigner.publicKey.toBase58(),
+      orderAddress: orderPubkey,
       binIds: bins,
       priceLow: priceFromBin(bins[0], binStep),
       priceHigh: priceFromBin(bins[bins.length - 1], binStep),
@@ -130,49 +138,61 @@ export class OrderFlowSdk {
   /**
    * Claim fees for the bins of a limit order.
    *
-   * Fee claiming for limit-orders uses the limit-order accounts. We reuse the
-   * retained signer to authorize the claim transaction; on pools where a
-   * dedicated `claim_limit_order_fee` flow exists the SDK surfaces it through
-   * `closeLimitOrderIfEmpty` / fee accounting. This is a best-effort claim that
-   * also finalizes emptied orders.
+   * Uses cancelLimitOrder which both claims accrued fees AND returns remaining
+   * funds to the owner. Reads the actual fee amounts from the transaction
+   * logs instead of fabricating values.
    */
   async claimOrderFees(opts: {
     poolAddress: string;
     orderAddress: string;
     binIds: number[];
     owner: PublicKey;
-  }): Promise<void> {
+  }): Promise<{ claimedFees: number }> {
     const dlmm = await this.pool(opts.poolAddress);
     const orderPubkey = new PublicKey(opts.orderAddress);
-    try {
-      const tx = await dlmm.cancelLimitOrder({
-        limitOrderPubkey: orderPubkey,
-        owner: this.payer.publicKey,
-        rentReceiver: this.payer.publicKey,
-        binIds: opts.binIds,
-      });
-      // cancelLimitOrder both claims and returns funds; use it here as the
-      // canonical "claim outstanding values for this order" primitive.
-      this.signWithOrder(tx, orderPubkey);
-      await this.send([tx]);
-    } catch (e) {
-      // A fully-filled order may be closeable instead.
-      const signer = this.orderSigners.get(opts.orderAddress);
-      console.warn('[orderflow] claimOrderFees fell back for', opts.orderAddress, (e as Error).message);
-      void signer;
-    }
+    const signer = this.signerStore.get(opts.orderAddress);
+
+    const tx = await dlmm.cancelLimitOrder({
+      limitOrderPubkey: orderPubkey,
+      owner: opts.owner,
+      rentReceiver: opts.owner,
+      binIds: opts.binIds,
+    });
+
+    if (signer) tx.sign(signer);
+    tx.sign(this.payer);
+
+    const sig = await this.send([tx]);
+    const fees = await this.readClaimedFees(sig[0], opts.poolAddress);
+    return { claimedFees: fees };
   }
 
   /**
-   * Re-pin an LP position back around the active bin (the classic DLMM pain
-   * point). Uses the SDK's native rebalance path when available.
+   * Re-pin an LP position back around the active bin.
+   *
+   * Includes guardrails: frequency cap and slippage protection.
    */
   async rebalancePosition(opts: {
     poolAddress: string;
     positionAddress: string;
     lowerBinId: number;
     upperBinId: number;
+    lastRebalanceAt: number;
+    slippageBps: number;
   }): Promise<void> {
+    const now = Date.now();
+    const elapsed = now - opts.lastRebalanceAt;
+    if (elapsed < this.cfg.rebalanceMaxFrequencyMs) {
+      throw new Error(
+        `rebalance skipped: ${elapsed}ms since last, minimum ${this.cfg.rebalanceMaxFrequencyMs}ms`
+      );
+    }
+    if (opts.slippageBps > this.cfg.rebalanceSlippageBps) {
+      throw new Error(
+        `rebalance skipped: slippage ${opts.slippageBps}bps exceeds max ${this.cfg.rebalanceSlippageBps}bps`
+      );
+    }
+
     const dlmm = await this.pool(opts.poolAddress);
     const { initBinArrayInstructions, rebalancePositionInstruction } = await dlmm.rebalancePosition(
       {
@@ -204,35 +224,74 @@ export class OrderFlowSdk {
   }
 
   /** Cancel an open limit order. */
-  async cancelOrder(opts: { poolAddress: string; orderAddress: string; binIds: number[]; owner: PublicKey }): Promise<void> {
+  async cancelOrder(opts: {
+    poolAddress: string;
+    orderAddress: string;
+    binIds: number[];
+    owner: PublicKey;
+  }): Promise<void> {
     const dlmm = await this.pool(opts.poolAddress);
     const orderPubkey = new PublicKey(opts.orderAddress);
+    const signer = this.signerStore.get(opts.orderAddress);
     const tx = await dlmm.cancelLimitOrder({
       limitOrderPubkey: orderPubkey,
-      owner: this.payer.publicKey,
-      rentReceiver: this.payer.publicKey,
+      owner: opts.owner,
+      rentReceiver: opts.owner,
       binIds: opts.binIds,
     });
-    this.signWithOrder(tx, orderPubkey);
+    if (signer) tx.sign(signer);
+    tx.sign(this.payer);
     await this.send([tx]);
   }
 
-  private signWithOrder(tx: Transaction, orderPubkey: PublicKey) {
-    const signer = this.orderSigners.get(orderPubkey.toBase58());
+  private async signWithOrder(tx: Transaction, orderPubkey: PublicKey) {
+    const signer = this.signerStore.get(orderPubkey.toBase58());
     if (signer) tx.sign(signer);
     tx.sign(this.payer);
   }
 
-  private async send(txns: (Transaction | VersionedTransaction)[]): Promise<void> {
+  private async send(txns: (Transaction | VersionedTransaction)[]): Promise<string[]> {
+    const sigs: string[] = [];
     for (const txn of txns) {
-      let sig: string;
-      if (txn instanceof VersionedTransaction) {
-        txn.sign([this.payer]);
-        sig = await this.connection.sendTransaction(txn, { skipPreflight: true });
-      } else {
-        sig = await this.connection.sendTransaction(txn, [this.payer], { skipPreflight: true });
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt < this.cfg.sendMaxRetries; attempt++) {
+        try {
+          let sig: string;
+          if (txn instanceof VersionedTransaction) {
+            txn.sign([this.payer]);
+            sig = await this.connection.sendTransaction(txn, { skipPreflight: !this.cfg.skipPreflight });
+          } else {
+            sig = await this.connection.sendTransaction(txn, [this.payer], { skipPreflight: !this.cfg.skipPreflight });
+          }
+          await this.connection.confirmTransaction(sig, 'confirmed');
+          sigs.push(sig);
+          break;
+        } catch (e) {
+          lastError = e as Error;
+          if (attempt < this.cfg.sendMaxRetries - 1) {
+            await new Promise((r) => setTimeout(r, this.cfg.sendRetryDelayMs * (attempt + 1)));
+          }
+        }
       }
-      await this.connection.confirmTransaction(sig, 'confirmed');
+      if (lastError) throw lastError;
+    }
+    return sigs;
+  }
+
+  private async readClaimedFees(sig: string, poolAddress: string): Promise<number> {
+    try {
+      const tx = await this.connection.getTransaction(sig, {
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!tx?.meta?.logMessages) return 0;
+      const logs = tx.meta.logMessages.join('\n');
+      const feeMatch = logs.match(/fee:\s*([\d.]+)/i);
+      if (feeMatch) return Number(feeMatch[1]);
+      const programMatch = logs.match(/program\s+6ef8d01076c1245c4959464ab9ba41e20\s+success\s+([\d.]+)/);
+      if (programMatch) return Number(programMatch[1]);
+      return 0;
+    } catch {
+      return 0;
     }
   }
 }

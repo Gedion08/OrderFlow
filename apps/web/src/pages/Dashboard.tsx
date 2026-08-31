@@ -17,7 +17,7 @@ import {
   Rocket,
   X,
 } from 'lucide-react';
-import { api, BookView, Strategy, fmtPrice, fmtUsd } from '../lib/api';
+import { api, BookView, Strategy, fmtPrice, fmtUsd, createCancelSignature } from '../lib/api';
 
 const DEFAULT_POOL = localStorage.getItem('orderflow.pool') ?? '';
 
@@ -84,7 +84,15 @@ export function Dashboard() {
   }, [wallet, refresh]);
 
   async function cancelStrategy(id: string) {
-    await api.cancelStrategy(id);
+    if (!publicKey) return;
+    const signature = await api.signMessageWithWallet(
+      () => publicKey,
+      (message) => window.solana?.signMessage?.(message) ?? Promise.resolve({ signature: new Uint8Array() }),
+      publicKey.toBase58(),
+      id,
+      'cancel'
+    );
+    await api.cancelStrategy(id, signature);
     setStrategies((s) => s.filter((x) => x.strategyId !== id));
   }
 

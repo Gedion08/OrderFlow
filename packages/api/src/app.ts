@@ -20,18 +20,22 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { resolveRepoRoot, DcaStrategy, binFromPriceFloor } from '@orderflow/core';
+import { resolveRepoRoot, DcaStrategy, loadConfig, signingMessage, verifySignature, binFromPriceFloor } from '@orderflow/core';
 import { createMeteoraClient } from './meteora-client';
 import { buildBook } from './book';
-import { StrategyStore } from './strategy-store';
+import { JsonStrategyStore, PostgresStrategyStore } from '@orderflow/store';
 
 export function createApp() {
   const app = express();
   app.use(cors());
   app.use(express.json());
 
+  const cfg = loadConfig();
   const meteora = createMeteoraClient();
-  const store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
+
+  const store = cfg.databaseUrl
+    ? new PostgresStrategyStore(cfg.databaseUrl)
+    : new JsonStrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'orderflow-api', ts: Date.now() });
@@ -82,7 +86,7 @@ export function createApp() {
           feeAmountY: Number(b.fee_y ?? b.feeAmountY ?? 0),
         }));
 
-      const strategies = store.byPool(req.params.address);
+      const strategies = await store.byPool(req.params.address);
 
       res.json(buildBook({
         poolAddress: req.params.address,
@@ -114,14 +118,27 @@ export function createApp() {
 
   app.post('/api/strategies', async (req, res, next) => {
     try {
-      const body = req.body as Partial<DcaStrategy>;
+      const body = req.body as Partial<DcaStrategy> & { signature?: string };
       if (!body.owner || !body.pool) {
         res.status(400).json({ error: 'owner and pool are required' });
         return;
       }
+      if (!body.signature) {
+        res.status(400).json({ error: 'signature is required' });
+        return;
+      }
+
+      const tempId = body.strategyId ?? `strat-${Date.now()}`;
+      const message = signingMessage(body.owner, tempId, 'create');
+      if (!verifySignature(body.owner, body.signature, message)) {
+        res.status(401).json({ error: 'invalid signature' });
+        return;
+      }
+
       const strategy: DcaStrategy = {
-        strategyId: body.strategyId ?? `strat-${Date.now()}`,
+        strategyId: tempId,
         owner: body.owner,
+        signature: body.signature,
         pool: body.pool,
         tokenMint: body.tokenMint ?? '',
         side: body.side ?? 'bid',
@@ -131,19 +148,38 @@ export function createApp() {
         intervalSeconds: body.intervalSeconds ?? 0,
         minPrice: body.minPrice ?? null,
         maxPrice: body.maxPrice ?? null,
+        slippageBps: body.slippageBps ?? cfg.rebalanceSlippageBps,
+        rebalanceFrequencyMs: body.rebalanceFrequencyMs ?? cfg.rebalanceMaxFrequencyMs,
         status: 'scheduled',
         createdAt: Date.now(),
         updatedAt: Date.now(),
         orders: [],
       };
-      store.upsert(strategy);
+      await store.upsert(strategy);
       res.status(201).json({ strategy });
     } catch (e) { next(e); }
   });
 
-  app.delete('/api/strategies/:id', async (req, res) => {
-    store.cancel(req.params.id);
-    res.json({ ok: true });
+  app.delete('/api/strategies/:id', async (req, res, next) => {
+    try {
+      const signature = String(req.query.signature ?? '');
+      const strategy = await store.byId(req.params.id);
+      if (!strategy) {
+        res.status(404).json({ error: 'strategy not found' });
+        return;
+      }
+      if (!signature) {
+        res.status(400).json({ error: 'signature query parameter is required' });
+        return;
+      }
+      const message = signingMessage(strategy.owner, strategy.strategyId, 'cancel');
+      if (!verifySignature(strategy.owner, signature, message)) {
+        res.status(401).json({ error: 'invalid signature' });
+        return;
+      }
+      await store.cancel(req.params.id);
+      res.json({ ok: true });
+    } catch (e) { next(e); }
   });
 
   // --- Wallet routes (Meteora Data API backed) --------------------

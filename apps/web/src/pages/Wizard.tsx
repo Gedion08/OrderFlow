@@ -19,7 +19,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { spreadBinsBetweenBrackets, priceFromBin } from '../lib/bin';
-import { api, fmtUsd, fmtPrice, PoolRow } from '../lib/api';
+import { api, fmtUsd, fmtPrice, PoolRow, createStrategySignature } from '../lib/api';
 
 type Step = 'amount' | 'token' | 'schedule' | 'review';
 
@@ -75,8 +75,21 @@ export function Wizard() {
     setLaunching(true);
     setLaunchErr(null);
     try {
+      const strategyId = `strat-${Date.now()}`;
+      const message = createStrategySignature(publicKey.toBase58(), strategyId);
+      let signature = '';
+      try {
+        const sig = await wallet.signMessage?.(Buffer.from(message));
+        if (sig?.signature) {
+          signature = Buffer.from(sig.signature).toString('base64');
+        }
+      } catch {
+        // wallet may not support signMessage
+      }
       await api.createStrategy({
+        strategyId,
         owner: publicKey.toBase58(),
+        signature,
         pool: token?.address ?? '',
         tokenMint: (token?.token_x_uri ?? token?.name ?? '') as string,
         side,

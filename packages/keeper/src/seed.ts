@@ -6,14 +6,15 @@
  */
 
 import { DcaStrategy, resolveRepoRoot } from '@orderflow/core';
-import { StrategyStore } from './store';
+import { JsonStrategyStore } from '@orderflow/store';
 import path from 'path';
 
-const store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
+const store = new JsonStrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
 
 const demo: DcaStrategy = {
   strategyId: `demo-${Date.now()}`,
   owner: process.env.OWNER_PUBKEY ?? '11111111111111111111111111111111',
+  signature: '',
   pool: process.env.POOL_ADDRESS ?? 'REPLACE_WITH_DLMM_POOL_ADDRESS',
   tokenMint: 'REPLACE_WITH_BASE_MINT',
   side: 'bid',
@@ -23,6 +24,8 @@ const demo: DcaStrategy = {
   intervalSeconds: 3600,
   minPrice: 120,
   maxPrice: 210,
+  slippageBps: 100,
+  rebalanceFrequencyMs: 3_600_000,
   status: 'scheduled',
   createdAt: Date.now(),
   updatedAt: Date.now(),

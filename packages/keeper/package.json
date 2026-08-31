@@ -13,6 +13,7 @@
   "dependencies": {
     "@orderflow/core": "*",
     "@orderflow/sdk": "*",
+    "@orderflow/store": "*",
     "@solana/web3.js": "^1.91.0",
     "bs58": "^5.0.0"
   },

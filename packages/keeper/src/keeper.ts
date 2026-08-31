@@ -13,7 +13,7 @@
  *   3. Claim fees — sweep unclaimed limit-order fees for bins we own, above a
  *      cost-effective threshold.
  *
- * It is intentionally crash-safe: state is persisted to the JSON store and each
+ * It is intentionally crash-safe: state is persisted to the store and each
  * tranche is idempotently tracked (an order is only placed once).
  */
 
@@ -30,9 +30,11 @@ import {
   spreadBinsBetweenBrackets,
   binFromPriceFloor,
   BIN_STEP_MAX_BPS,
+  signingMessage,
+  verifySignature,
 } from '@orderflow/core';
-import { OrderFlowSdk } from '@orderflow/sdk';
-import { StrategyStore } from './store';
+import { OrderFlowSdk, OrderSignerStore } from '@orderflow/sdk';
+import { JsonStrategyStore, PostgresStrategyStore } from '@orderflow/store';
 
 function makeKeypair(): Keypair {
   const pk = process.env.KEEPER_PRIVATE_KEY;
@@ -43,16 +45,25 @@ function makeKeypair(): Keypair {
 export class Keeper {
   private readonly cfg;
   private readonly sdk: OrderFlowSdk;
-  private readonly store: StrategyStore;
+  private readonly store: JsonStrategyStore | PostgresStrategyStore;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private lastAlertAt = 0;
 
   constructor() {
     this.cfg = loadConfig();
-    this.store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
+    const storeFile = process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json');
+    this.store = this.cfg.databaseUrl
+      ? new PostgresStrategyStore(this.cfg.databaseUrl)
+      : new JsonStrategyStore(storeFile);
+
     const connection = new Connection(this.cfg.rpcEndpoint, 'confirmed');
     const payer = makeKeypair();
-    this.sdk = new OrderFlowSdk({ connection, payer });
+    const signerStore = new OrderSignerStore(
+      process.env.SIGNER_STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'order-signers.json.enc'),
+      process.env.SIGNER_STORE_KEY ?? process.env.KEEPER_PRIVATE_KEY ?? '0000000000000000000000000000000000000000000000000000000000000000',
+    );
+    this.sdk = new OrderFlowSdk({ connection, payer, signerStore });
   }
 
   start() {
@@ -68,16 +79,18 @@ export class Keeper {
   }
 
   private async tick() {
-    if (this.running) return; // don't overlap
+    if (this.running) return;
     this.running = true;
     try {
-      const strategies = this.store.list();
+      const strategies = await this.store.list();
       for (const s of strategies) {
         if (s.status === 'cancelled' || s.status === 'completed') continue;
         try {
           await this.advance(s);
         } catch (e) {
-          console.error(`[keeper] ${s.strategyId} advance failed:`, (e as Error).message);
+          const msg = (e as Error).message;
+          console.error(`[keeper] ${s.strategyId} advance failed:`, msg);
+          this.alert(`Keeper advance failed for ${s.strategyId}: ${msg}`);
         }
       }
     } finally {
@@ -85,16 +98,44 @@ export class Keeper {
     }
   }
 
+  private async alert(message: string) {
+    const now = Date.now();
+    if (now - this.lastAlertAt < 60_000) return;
+    this.lastAlertAt = now;
+    console.error('[keeper-alert]', message);
+    if (this.cfg.keeperAlertWebhook) {
+      try {
+        await fetch(this.cfg.keeperAlertWebhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: message, ts: now }),
+        });
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  private async verifyStrategyOwnership(s: DcaStrategy): Promise<boolean> {
+    if (!s.signature) return false;
+    const message = signingMessage(s.owner, s.strategyId, 'create');
+    return verifySignature(s.owner, s.signature, message);
+  }
+
   /**
    * Place the next scheduled tranche of a DCA strategy and claim any overdue
    * fees for already-placed tranches.
    */
   private async advance(s: DcaStrategy) {
+    if (!(await this.verifyStrategyOwnership(s))) {
+      console.warn(`[keeper] ${s.strategyId} failed ownership verification, skipping`);
+      return;
+    }
+
     const now = Date.now();
     const nextTrancheIdx = s.orders.length;
     const dueTranches: DcaOrder[] = [];
 
-    // Determine how many tranches are due by wall-clock schedule.
     let dueCount = 0;
     if (s.tranches > 0) {
       const elapsed = now - s.createdAt;
@@ -103,45 +144,40 @@ export class Keeper {
         dueCount = Math.min(s.tranches, Math.floor(elapsed / perTrancheMs) + 1);
       }
     }
-    // If intervalSeconds is 0 ("fire everything now"), place all tranches.
     if (s.intervalSeconds <= 0) dueCount = s.tranches;
-    dueCount = Math.max(1, dueCount); // always try to place the first tranche
+    dueCount = Math.max(1, dueCount);
 
-    // Claim fees for placed orders first.
+    const ownerPk = new PublicKey(s.owner);
+
     for (const o of s.orders) {
       if (o.status === 'placed' || o.status === 'partially_filled') {
         try {
-          await this.sdk.claimOrderFees({
+          const result = await this.sdk.claimOrderFees({
             poolAddress: s.pool,
             orderAddress: o.address,
             binIds: o.binIdsResolved,
-            owner: new PublicKey(s.owner),
+            owner: ownerPk,
           });
-          o.feesEarned += this.cfg.claimThresholdUsd; // nominal; real fee accounting via Data API
+          o.feesEarned += result.claimedFees;
           o.lastClaimedAt = now;
-          this.store.upsert(s);
+          await this.store.upsert(s);
         } catch (e) {
           console.error(`[keeper] ${s.strategyId} claim fees failed:`, (e as Error).message);
         }
       }
     }
 
-    // Place due tranches.
     while (s.orders.length < Math.min(s.tranches, dueCount)) {
-      const idx = s.orders.length; // 0-based next tranche
-      const fraction = (idx + 1) / s.tranches;
+      const idx = s.orders.length;
       const trancheAmount = s.totalAmount / s.tranches;
-      // Amount in raw units (assume 1e6 precision anchor for the reference
-      // keeper; read actual mint decimals via the pool in production).
       const rawAmount = Math.max(1, Math.trunc(trancheAmount * 1e6));
 
-      // Spread this tranche across a small run of bins inside the bracket so a
-      // single limit order covers a price range rather than one point.
       const lower = s.minPrice ?? 0;
       const upper = s.maxPrice ?? (lower || 1);
 
       const placed = await this.sdk.placeLimitOrder({
         poolAddress: s.pool,
+        owner: ownerPk,
         side: s.side,
         bins: spreadBinsBetweenBrackets(lower, upper, 1, 100),
         amount: new BN(rawAmount),
@@ -167,15 +203,13 @@ export class Keeper {
       console.log(`[keeper] ${s.strategyId} placed tranche ${idx + 1}/${s.tranches} @ ${placed.orderAddress}`);
     }
 
-    // Re-pin any "active" strategies that hold LP positions needing a recenter.
     await this.rePin(s);
 
-    // Mark complete when all tranches placed and all filled.
     const allPlaced = s.orders.length >= s.tranches;
     const allFilled = allPlaced && s.orders.every((o) => o.filled > 0.999);
     if (allFilled) s.status = 'completed';
     else if (allPlaced) s.status = 'active';
-    this.store.upsert(s);
+    await this.store.upsert(s);
   }
 
   /**
@@ -183,11 +217,10 @@ export class Keeper {
    * bracket has drifted. For pure limit-order strategies this is a no-op.
    */
   private async rePin(s: DcaStrategy) {
-    // Re-pinning is a per-position optimisation. In the reference keeper we
-    // only re-pin when the strategy declares an LP position address.
     const position = (s as any).lpPositionAddress as string | undefined;
     if (!position) return;
     if (!(s.minPrice && s.maxPrice)) return;
+    const lastRebalanceAt = (s as any).lastRebalanceAt as number | undefined ?? 0;
     try {
       await this.sdk.rebalancePosition({
         poolAddress: s.pool,
@@ -197,7 +230,10 @@ export class Keeper {
           binFromPriceFloor(s.maxPrice, 100),
           binFromPriceFloor(s.minPrice, 100) + 1,
         ),
+        lastRebalanceAt,
+        slippageBps: s.slippageBps,
       });
+      (s as any).lastRebalanceAt = Date.now();
       console.log(`[keeper] ${s.strategyId} re-pinned position`);
     } catch (e) {
       console.error(`[keeper] ${s.strategyId} re-pin failed:`, (e as Error).message);

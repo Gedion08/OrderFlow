@@ -1,15 +1,15 @@
 /**
- * Strategy store (exposed via the API).
+ * JSON-file strategy store (development fallback).
  *
- * Reads/writes the same on-disk JSON the keeper uses so strategies created
- * through the web UI are visible to and executed by the keeper process.
+ * Reads/writes strategies to disk as JSON. Not safe for concurrent
+ * writers or horizontal scaling — use PostgresStrategyStore in production.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { DcaStrategy } from '@orderflow/core';
 
-export class StrategyStore {
+export class JsonStrategyStore {
   private readonly file: string;
   private cache: DcaStrategy[] | null = null;
 
@@ -70,7 +70,6 @@ export class StrategyStore {
     this.persist();
   }
 
-  /** Mark a strategy cancelled (keeps history, stops the keeper). */
   cancel(id: string) {
     const s = this.byId(id);
     if (s && s.status !== 'cancelled') {

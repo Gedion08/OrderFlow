@@ -70,6 +70,13 @@ export interface OrderFlowConfig {
   claimThresholdUsd: number;
   port: number;
   webApiUrl: string;
+  skipPreflight: boolean;
+  sendMaxRetries: number;
+  sendRetryDelayMs: number;
+  databaseUrl: string;
+  rebalanceMaxFrequencyMs: number;
+  rebalanceSlippageBps: number;
+  keeperAlertWebhook: string;
 }
 
 function int(name: string, fallback: number): number {
@@ -92,5 +99,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OrderFlowConfi
     claimThresholdUsd: int('CLAIM_THRESHOLD_USD', 1) / 1000,
     port: int('PORT', 8080),
     webApiUrl: str('VITE_API_URL', 'http://localhost:8080'),
+    skipPreflight: env['SKIP_PREFLIGHT'] !== 'true',
+    sendMaxRetries: int('SEND_MAX_RETRIES', 3),
+    sendRetryDelayMs: int('SEND_RETRY_DELAY_MS', 1000),
+    databaseUrl: str('DATABASE_URL', ''),
+    rebalanceMaxFrequencyMs: int('REBALANCE_MAX_FREQUENCY_MS', 3_600_000),
+    rebalanceSlippageBps: int('REBALANCE_SLIPPAGE_BPS', 100),
+    keeperAlertWebhook: str('KEEPER_ALERT_WEBHOOK', ''),
   };
 }
