@@ -85,7 +85,7 @@ function str(name: string, fallback: string): string {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): OrderFlowConfig {
   return {
-    meteoraApiBase: str('METEORA_API_BASE', 'https://dlmm-api.meteora.ag'),
+    meteoraApiBase: str('METEORA_API_BASE', 'https://dlmm.datapi.meteora.ag'),
     rpcEndpoint: str('RPC_ENDPOINT', 'https://api.mainnet-beta.solana.com'),
     rpcWss: str('RPC_WSS', 'wss://api.mainnet-beta.solana.com'),
     keeperIntervalMs: int('KEEPER_INTERVAL_MS', DEFAULT_KEEPER_INTERVAL_MS),

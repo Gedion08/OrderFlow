@@ -20,7 +20,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { resolveRepoRoot, DcaStrategy } from '@orderflow/core';
+import { resolveRepoRoot, DcaStrategy, binFromPriceFloor } from '@orderflow/core';
 import { createMeteoraClient } from './meteora-client';
 import { buildBook } from './book';
 import { StrategyStore } from './strategy-store';
@@ -45,11 +45,12 @@ export function createApp() {
       const q = String(req.query.q ?? '').trim().toLowerCase();
       let data = await meteora.pools(limit, offset);
       if (q) {
-        const pools = Array.isArray(data) ? data as any[] : [];
+        const pools = Array.isArray(data) ? (data as any[]) : [];
+        const norm = (s: string) => s.replace(/[\/\s-]+/g, '').toLowerCase();
         data = pools.filter((p) =>
-          [p.name, p.symbol, p.pool_token_symbol, p.pool_symbol, p.pool_quote_symbol, p.address]
+          [p.name, p.symbol, p.address, p.token_x_uri, p.token_y_uri]
             .filter(Boolean)
-            .some((field: string) => field.toLowerCase().includes(q)),
+            .some((field: string) => norm(String(field)).includes(norm(q))),
         );
       }
       res.json({ pools: data });
@@ -66,9 +67,10 @@ export function createApp() {
   app.get('/api/book/:address', async (req, res, next) => {
     try {
       const pool = await meteora.pool(req.params.address);
-      const binStep = Number(pool?.bin_step ?? pool?.binStep ?? 100);
-      const activeBinId = Number(pool?.active_bin ?? pool?.activeBinId ?? 0);
-      const bins = Array.isArray(pool?.bins) ? pool.bins : [];
+      const binStep = Number(pool?.bin_step ?? pool?.binStep ?? pool?.pool_config?.bin_step ?? 100);
+      const currentPrice = Number(pool?.current_price ?? 0);
+      const activeBinId = currentPrice > 0 ? binFromPriceFloor(currentPrice, binStep) : 0;
+      const bins: any[] = [];
       const half = Math.max(1, Math.floor(bins.length / 2));
       const asks = bins.slice(half);
       const bidBases = bins.slice(0, half);
@@ -89,17 +91,17 @@ export function createApp() {
         binBases: toRaw(bidBases),
         binAsks: toRaw(asks),
         tokenX: {
-          mint: String(pool?.token_x ?? pool?.tokenX ?? ''),
-          symbol: String(pool?.token_x_symbol ?? pool?.tokenSymbol ?? ''),
-          decimals: Number(pool?.token_x_decimals ?? pool?.tokenXDecimals ?? 6),
+          mint: String(pool?.token_x?.address ?? pool?.tokenX?.mint ?? ''),
+          symbol: String(pool?.token_x?.symbol ?? pool?.tokenX?.symbol ?? ''),
+          decimals: Number(pool?.token_x?.decimals ?? pool?.tokenX?.decimals ?? 6),
         },
         tokenY: {
-          mint: String(pool?.token_y ?? pool?.tokenY ?? ''),
-          symbol: String(pool?.token_y_symbol ?? pool?.quoteSymbol ?? ''),
-          decimals: Number(pool?.token_y_decimals ?? pool?.tokenYDecimals ?? 6),
+          mint: String(pool?.token_y?.address ?? pool?.tokenY?.mint ?? ''),
+          symbol: String(pool?.token_y?.symbol ?? pool?.tokenY?.symbol ?? ''),
+          decimals: Number(pool?.token_y?.decimals ?? pool?.tokenY?.decimals ?? 6),
         },
-        poolTokenSymbol: pool?.pool_token_symbol ?? pool?.pool_symbol ?? '',
-        poolQuoteSymbol: pool?.pool_quote_symbol ?? pool?.quote_symbol ?? '',
+        poolTokenSymbol: pool?.token_x?.symbol ?? pool?.poolTokenSymbol ?? '',
+        poolQuoteSymbol: pool?.token_y?.symbol ?? pool?.poolQuoteSymbol ?? '',
         strategies,
       }));
     } catch (e) { next(e); }
