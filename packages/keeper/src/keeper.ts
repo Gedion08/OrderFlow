@@ -20,8 +20,10 @@
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import BN from 'bn.js';
+import path from 'path';
 import {
   loadConfig,
+  resolveRepoRoot,
   DcaStrategy,
   DcaOrder,
   DcaStatus,
@@ -47,7 +49,7 @@ export class Keeper {
 
   constructor() {
     this.cfg = loadConfig();
-    this.store = new StrategyStore(process.env.STORE_FILE ?? './data/strategies.json');
+    this.store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
     const connection = new Connection(this.cfg.rpcEndpoint, 'confirmed');
     const payer = makeKeypair();
     this.sdk = new OrderFlowSdk({ connection, payer });

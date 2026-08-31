@@ -5,10 +5,11 @@
  *   npm run seed -w @orderflow/keeper
  */
 
-import { DcaStrategy } from '@orderflow/core';
+import { DcaStrategy, resolveRepoRoot } from '@orderflow/core';
 import { StrategyStore } from './store';
+import path from 'path';
 
-const store = new StrategyStore(process.env.STORE_FILE ?? './data/strategies.json');
+const store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
 
 const demo: DcaStrategy = {
   strategyId: `demo-${Date.now()}`,

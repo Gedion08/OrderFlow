@@ -19,7 +19,8 @@
 
 import express from 'express';
 import cors from 'cors';
-import { loadConfig, DcaStrategy } from '@orderflow/core';
+import path from 'path';
+import { resolveRepoRoot, DcaStrategy } from '@orderflow/core';
 import { createMeteoraClient } from './meteora-client';
 import { buildBook } from './book';
 import { StrategyStore } from './strategy-store';
@@ -30,7 +31,7 @@ export function createApp() {
   app.use(express.json());
 
   const meteora = createMeteoraClient();
-  const store = new StrategyStore(process.env.STORE_FILE ?? './data/strategies.json');
+  const store = new StrategyStore(process.env.STORE_FILE ?? path.join(resolveRepoRoot(), 'data', 'strategies.json'));
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'orderflow-api', ts: Date.now() });

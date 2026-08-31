@@ -11,6 +11,30 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
+ * Resolve the monorepo root directory by walking up from `startDir` looking for
+ * the root package.json (where the npm workspaces are declared). Falls back to
+ * `startDir` if not found.
+ */
+export function resolveRepoRoot(startDir: string = process.cwd()): string {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const pkg = path.join(dir, 'package.json');
+    if (fs.existsSync(pkg)) {
+      try {
+        const json = JSON.parse(fs.readFileSync(pkg, 'utf8'));
+        if (json.workspaces) return dir;
+      } catch {
+        /* keep walking */
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.resolve(startDir);
+}
+
+/**
  * Load a `.env` into process.env (without overwriting existing values).
  * Resolves the monorepo-root `.env` by walking up from `cwd` so it works no
  * matter which workspace runs the process. Zero-dependency.
