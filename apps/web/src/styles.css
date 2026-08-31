@@ -274,3 +274,54 @@ label {
   .card { padding: 18px; }
   .btn-lg { padding: 12px 20px; font-size: 14px; }
 }
+
+/* ═══════════════════════════════════════════════════
+   Wallet Adapter Overrides
+   ═══════════════════════════════════════════════════ */
+
+.wallet-adapter-button {
+  font-family: var(--font) !important;
+  border-radius: var(--radius-sm) !important;
+  height: 40px !important;
+  padding: 0 16px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+
+.wallet-adapter-button-trigger {
+  background: var(--surface-alt) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border) !important;
+}
+.wallet-adapter-button-trigger:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: var(--text) !important;
+  border-color: var(--border-focus) !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+}
+.wallet-adapter-modal-title {
+  color: var(--text) !important;
+  font-family: var(--font) !important;
+}
+.wallet-adapter-modal-list li {
+  background: var(--bg-raised) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text) !important;
+}
+.wallet-adapter-modal-list li:hover {
+  border-color: var(--accent) !important;
+  background: var(--surface-alt) !important;
+}
+.wallet-adapter-modal-button-close {
+  background: var(--surface-alt) !important;
+  border: 1px solid var(--border) !important;
+}
+.wallet-adapter-modal-button-close:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}

@@ -115,7 +115,7 @@ export class Keeper {
             binIds: o.binIdsResolved,
             owner: new PublicKey(s.owner),
           });
-          o.feesEarned += 0.001; // nominal; real fee accounting via Data API
+          o.feesEarned += this.cfg.claimThresholdUsd; // nominal; real fee accounting via Data API
           o.lastClaimedAt = now;
           this.store.upsert(s);
         } catch (e) {

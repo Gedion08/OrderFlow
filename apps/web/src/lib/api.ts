@@ -10,6 +10,54 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API ${res.status} for ${path}`);
+  return res.json() as Promise<T>;
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`API ${res.status} for ${path}`);
+  return res.json() as Promise<T>;
+}
+
+export interface StrategyPayload {
+  strategyId?: string;
+  owner: string;
+  pool: string;
+  tokenMint?: string;
+  side: 'bid' | 'ask';
+  totalAmount: number;
+  totalAmountLabel?: string;
+  tranches: number;
+  intervalSeconds: number;
+  minPrice: number | null;
+  maxPrice: number | null;
+}
+
+export interface Strategy {
+  strategyId: string;
+  owner: string;
+  pool: string;
+  tokenMint: string;
+  side: 'bid' | 'ask';
+  totalAmount: number;
+  totalAmountLabel: string;
+  tranches: number;
+  intervalSeconds: number;
+  minPrice: number | null;
+  maxPrice: number | null;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  orders: unknown[];
+}
+
 export interface PoolRow {
   address: string;
   name?: string;
@@ -58,6 +106,9 @@ export const api = {
   limitOrders: (wallet: string) => get<any>(`/api/limit-orders/${wallet}`),
   portfolio: (wallet: string) => get<any>(`/api/portfolio/${wallet}`),
   positions: (pool: string, wallet: string) => get<any>(`/api/positions/${pool}/${wallet}`),
+  strategies: (wallet: string) => get<{ strategies: Strategy[] }>(`/api/strategies/${wallet}`),
+  createStrategy: (s: StrategyPayload) => post<{ strategy: Strategy }>('/api/strategies', s),
+  cancelStrategy: (id: string) => del<{ ok: boolean }>(`/api/strategies/${id}`),
 };
 
 export const fmtUsd = (n: number | undefined | null, digits = 2) =>

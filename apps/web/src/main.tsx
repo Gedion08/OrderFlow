@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { Zap, BarChart3, Menu, X } from 'lucide-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { WalletContext } from './components/WalletContext';
 import './styles.css';
 import { Wizard } from './pages/Wizard';
 import { Dashboard } from './pages/Dashboard';
@@ -60,6 +62,9 @@ function Layout() {
           <nav style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <DesktopNavLink to="/" label="Launch" active={location.pathname === '/'} />
             <DesktopNavLink to="/dashboard" label="Dashboard" active={location.pathname === '/dashboard'} />
+            <div style={{ marginLeft: 12 }}>
+              <WalletMultiButton />
+            </div>
           </nav>
 
           {/* Mobile Toggle */}
@@ -162,8 +167,10 @@ function MobileNavLink({ to, label, onClick }: { to: string; label: string; onCl
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <Layout />
-    </BrowserRouter>
+    <WalletContext>
+      <BrowserRouter>
+        <Layout />
+      </BrowserRouter>
+    </WalletContext>
   </React.StrictMode>
 );

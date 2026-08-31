@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import {
   ArrowRight,
   ArrowLeftRight,
   Search,
-  Calendar,
   Layers,
   BarChart3,
   Check,
@@ -15,8 +16,8 @@ import {
   Hash,
   ChevronRight,
   CircleDot,
+  Wallet,
 } from 'lucide-react';
-import type { DcaStrategy } from '@orderflow/core';
 import { spreadBinsBetweenBrackets, priceFromBin } from '../lib/bin';
 import { api, fmtUsd, fmtPrice, PoolRow } from '../lib/api';
 
@@ -32,6 +33,7 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 
 export function Wizard() {
+  const { publicKey, connected } = useWallet();
   const [step, setStep] = useState<Step>('amount');
   const [amount, setAmount] = useState('1000');
   const [tranches, setTranches] = useState('10');
@@ -44,6 +46,8 @@ export function Wizard() {
   const [results, setResults] = useState<PoolRow[]>([]);
   const [searching, setSearching] = useState(false);
   const [launched, setLaunched] = useState(false);
+  const [launching, setLaunching] = useState(false);
+  const [launchErr, setLaunchErr] = useState<string | null>(null);
 
   const amountN = Number(amount) || 0;
   const minN = Number(minPrice) || 0;
@@ -66,26 +70,30 @@ export function Wizard() {
     }
   }
 
-  function finish() {
-    const strategy: DcaStrategy = {
-      strategyId: `strat-${Date.now()}`,
-      owner: 'YOUR_WALLET_PUBKEY',
-      pool: token?.address ?? '',
-      tokenMint: (token?.token_x_uri ?? token?.name ?? '') as string,
-      side,
-      totalAmount: amountN,
-      totalAmountLabel: `${fmtUsd(amountN)}`,
-      tranches: Number(tranches) || 1,
-      intervalSeconds: Number(intervalSec) || 0,
-      minPrice: minN,
-      maxPrice: maxN,
-      status: 'scheduled',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      orders: [],
-    };
-    console.log('[OrderFlow] strategy ready to launch:', strategy);
-    setLaunched(true);
+  async function finish() {
+    if (!connected || !publicKey) return;
+    setLaunching(true);
+    setLaunchErr(null);
+    try {
+      await api.createStrategy({
+        owner: publicKey.toBase58(),
+        pool: token?.address ?? '',
+        tokenMint: (token?.token_x_uri ?? token?.name ?? '') as string,
+        side,
+        totalAmount: amountN,
+        totalAmountLabel: `${fmtUsd(amountN)}`,
+        tranches: Number(tranches) || 1,
+        intervalSeconds: Number(intervalSec) || 0,
+        minPrice: minN,
+        maxPrice: maxN,
+      });
+      console.log('[OrderFlow] strategy submitted to keeper for execution');
+      setLaunched(true);
+    } catch (e) {
+      setLaunchErr((e as Error).message);
+    } finally {
+      setLaunching(false);
+    }
   }
 
   const next = () => {
@@ -321,13 +329,45 @@ export function Wizard() {
               bins={binPreview}
             />
             {!launched && (
-              <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
-                <button className="btn-primary btn-lg" onClick={finish} style={{ flex: 1 }}>
-                  <Rocket size={16} /> Launch strategy
-                </button>
-                <button className="btn btn-lg" onClick={() => setStep('schedule')}>
-                  <ArrowLeftRight size={16} style={{ transform: 'rotate(180deg)' }} /> Back
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 24 }}>
+                {!connected ? (
+                  <div
+                    style={{
+                      padding: 20,
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--surface-alt)',
+                      border: '1px solid var(--border)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 14,
+                      textAlign: 'center',
+                    }}
+                  >
+                    <Wallet size={28} style={{ color: 'var(--accent-light)' }} />
+                    <div>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Connect your wallet</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                        You need to connect a Solana wallet before launching a strategy.
+                      </div>
+                    </div>
+                    <WalletMultiButton />
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button className="btn-primary btn-lg" onClick={finish} disabled={launching} style={{ flex: 1 }}>
+                        <Rocket size={16} /> {launching ? 'Launching…' : 'Launch strategy'}
+                      </button>
+                      <button className="btn btn-lg" onClick={() => setStep('schedule')} disabled={launching}>
+                        <ArrowLeftRight size={16} style={{ transform: 'rotate(180deg)' }} /> Back
+                      </button>
+                    </div>
+                    {launchErr && (
+                      <div style={{ fontSize: 13, color: 'var(--red)' }}>{launchErr}</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {launched && (

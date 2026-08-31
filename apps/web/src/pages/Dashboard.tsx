@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import {
   RefreshCw,
   Activity,
@@ -11,18 +13,28 @@ import {
   AlertCircle,
   Wifi,
   WifiOff,
+  Wallet,
+  Rocket,
+  X,
 } from 'lucide-react';
-import { api, BookView, fmtPrice, fmtUsd } from '../lib/api';
+import { api, BookView, Strategy, fmtPrice, fmtUsd } from '../lib/api';
 
 const DEFAULT_POOL = localStorage.getItem('orderflow.pool') ?? '';
 
 export function Dashboard() {
+  const { publicKey, connected } = useWallet();
+  const wallet = publicKey?.toBase58() ?? '';
+
   const [pool, setPool] = useState(DEFAULT_POOL);
   const [book, setBook] = useState<BookView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [auto, setAuto] = useState(true);
   const [loading, setLoading] = useState(false);
+
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [portfolio, setPortfolio] = useState<any[]>([]);
+  const [limitOrders, setLimitOrders] = useState<any>(null);
 
   useEffect(() => {
     if (!pool.trim()) return;
@@ -52,8 +64,158 @@ export function Dashboard() {
     return () => clearInterval(t);
   }, [auto]);
 
+  // Load wallet-specific live data when a wallet is connected.
+  useEffect(() => {
+    if (!wallet) return;
+    let live = true;
+    api
+      .strategies(wallet)
+      .then((r) => live && setStrategies(r.strategies))
+      .catch(() => {});
+    api
+      .portfolio(wallet)
+      .then((r) => live && setPortfolio(Array.isArray(r) ? r : []))
+      .catch(() => {});
+    api
+      .limitOrders(wallet)
+      .then((r) => live && setLimitOrders(r))
+      .catch(() => {});
+    return () => { live = false; };
+  }, [wallet, refresh]);
+
+  async function cancelStrategy(id: string) {
+    await api.cancelStrategy(id);
+    setStrategies((s) => s.filter((x) => x.strategyId !== id));
+  }
+
   return (
     <div className="animate-in">
+      {/* ── Wallet Section ── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        {!connected ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 14,
+              textAlign: 'center',
+              padding: '12px 0',
+            }}
+          >
+            <Wallet size={28} style={{ color: 'var(--accent-light)' }} />
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                Connect your wallet to view your live strategies & positions
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Your OrderFlow strategies, DLMM limit orders, portfolio and fees update in real time.
+              </div>
+            </div>
+            <WalletMultiButton />
+          </div>
+        ) : (
+          <div className="animate-in">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <Zap size={16} style={{ color: 'var(--accent-light)' }} />
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Your strategies</h3>
+              <span className="badge badge-accent">{strategies.length} active</span>
+            </div>
+
+            {strategies.length === 0 ? (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                No strategies yet —{' '}
+                <a href="/">launch one from the Wizard →</a>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {strategies.map((s) => (
+                  <div
+                    key={s.strategyId}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '12px 14px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'var(--bg-raised)',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>
+                        {fmtUsd(s.totalAmount)}{' '}
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 400 }}>
+                          · {s.tranches} tranche(s) · pool {s.pool.slice(0, 6)}...{s.pool.slice(-4)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {s.side === 'bid' ? 'Buy the dip' : 'Take profit'} ·{' '}
+                        {s.minPrice != null && s.maxPrice != null
+                          ? `${fmtPrice(s.minPrice)} — ${fmtPrice(s.maxPrice)}`
+                          : '—'}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span className={`badge ${s.status === 'cancelled' ? 'badge-red' : s.status === 'completed' ? 'badge-green' : 'badge-amber'}`}>
+                        {s.status}
+                      </span>
+                      <button
+                        className="btn"
+                        onClick={() => cancelStrategy(s.strategyId)}
+                        style={{ padding: '6px 10px' }}
+                        title="Cancel strategy"
+                      >
+                        <X size={14} /> Cancel
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(portfolio.length > 0 || limitOrders) && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
+                  Live positions on Meteora
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+                  {portfolio.map((p, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: '12px 14px',
+                        borderRadius: 'var(--radius-sm)',
+                        background: 'var(--bg-raised)',
+                        fontSize: 13,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>
+                        {p?.pool_symbol ?? p?.symbol ?? p?.pool ?? 'Pool'}
+                      </div>
+                      <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                        {fmtUsd(Number(p?.value ?? p?.totalValue ?? 0))} value
+                      </div>
+                      {p?.unclaimed_fees != null && (
+                        <div style={{ color: 'var(--green)' }}>
+                          {fmtUsd(Number(p.unclaimed_fees))} unclaimed fees
+                        </div>
+                      )}
+                      {p?.pnl != null && (
+                        <div style={{ color: Number(p.pnl) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {fmtUsd(Number(p.pnl))} PnL
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* ── Pool Input Bar ── */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
