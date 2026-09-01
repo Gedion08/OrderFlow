@@ -3,7 +3,10 @@ import { Program } from "@coral-xyz/anchor";
 import { expect } from "chai";
 import { Orderflow } from "../target/types/orderflow";
 
-const { SystemProgram, Keypair } = anchor.web3;
+const { SystemProgram } = anchor.web3;
+
+// OrderFlow program id (must match lib.rs declare_id!)
+const PROGRAM_ID = new anchor.web3.PublicKey("AnChOrFlow11111111111111111111111111111111");
 
 describe("orderflow", () => {
   const provider = anchor.AnchorProvider.env();
@@ -11,36 +14,45 @@ describe("orderflow", () => {
   const program = anchor.workspace.Orderflow as Program<Orderflow>;
 
   const owner = provider.wallet.publicKey;
-  const pool = Keypair.generate().publicKey;
+  const nonce = new anchor.BN(Date.now() % 0xffffffff);
+  const pool = anchor.web3.Keypair.generate().publicKey;
+  const mint = anchor.web3.Keypair.generate().publicKey;
 
-  it("creates a strategy", async () => {
+  function vaultPda(ownerKey: anchor.web3.PublicKey, n: anchor.BN) {
+    return anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), ownerKey.toBuffer(), n.toArrayLike(Buffer, "le", 8)],
+      PROGRAM_ID
+    );
+  }
+
+  it("creates a vault", async () => {
+    const [vault] = vaultPda(owner, nonce);
     const tx = await program.methods
-      .createStrategy(
+      .createVault(
+        nonce,
         pool,
+        mint,
         { bid: {} },
-        new anchor.BN(100_000_000),
-        10,
-        3600,
-        new anchor.BN(1_000_000),
-        new anchor.BN(2_000_000)
+        10,               // tranches
+        new anchor.BN(3600), // interval_seconds
+        new anchor.BN(100),  // min_bin_id
+        new anchor.BN(200),  // max_bin_id
+        new anchor.BN(1_000_000), // tranche_amount
+        new anchor.BN(10_000_000) // total_cap
       )
       .accounts({
-        strategy: strategyPda(owner, pool)[0],
+        vault,
         owner,
-        pool,
+        systemProgram: SystemProgram.programId,
+        mint,
       })
       .rpc();
 
-    const s = await program.account.strategy.fetch(strategyPda(owner, pool)[0]);
-    expect(s.tranches).to.equal(10);
-    expect(s.status.scheduled).to.equal(true);
+    const v = await program.account.strategyVault.fetch(vault);
+    expect(v.tranches).to.equal(10);
+    expect(v.trancheAmount.toString()).to.equal("1000000");
+    expect(v.totalCap.toString()).to.equal("10000000");
+    expect(v.status.depositing).to.equal(true);
     expect(tx).to.be.a("string");
   });
 });
-
-function strategyPda(owner: anchor.web3.PublicKey, pool: anchor.web3.PublicKey) {
-  return anchor.web3.PublicKey.findProgramAddressSync(
-    [Buffer.from("strategy"), owner.toBuffer(), pool.toBuffer()],
-    new anchor.web3.PublicKey("AnChOrFlow11111111111111111111111111111111")
-  );
-}

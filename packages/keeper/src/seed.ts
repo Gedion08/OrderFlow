@@ -30,6 +30,8 @@ const demo: DcaStrategy = {
   createdAt: Date.now(),
   updatedAt: Date.now(),
   orders: [],
+  vaultNonce: null,
+  vaultAddress: null,
 };
 
 store.upsert(demo);

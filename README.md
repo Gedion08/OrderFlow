@@ -20,27 +20,30 @@ paid while you wait. OrderFlow wraps that engine behind a "set it and forget it"
 │  • "Set it & forget it" wizard (amount→token→tranches→go)       │
 │  • Live orderbook-style dashboard (/api/book/:pool)             │
 └───────────────┬───────────────────────────────┬─────────────────┘
-                │  HTTP (read)                  │
+                │  HTTP (read) + owner-signed create/deposit
 ┌───────────────▼───────────────────────────────▼─────────────────┐
 │  packages/api  (Express read layer)                             │
 │  /api/pools  /api/book/:pool  /api/limit-orders/:w              │
 │  /api/portfolio/:w  /api/positions/:pool/:w                     │
 │   └── MeteoraApiClient → dlmm-api.meteora.ag (official Data API)│
 └───────────────▲───────────────────────────────┬─────────────────┘
-                │ store                        │ executes
+                │ store                        │ crank
 ┌───────────────┴───────────────────────────────▼─────────────────┐
-│  packages/keeper  (cron/keeper)                                  │
-│  • advance scheduled tranches → place DLMM limit orders          │
-│  • re-pin LP positions around active bin                         │
-│  • claim fees from owned bins                                     │
-│   └── OrderFlowSdk → @meteora-ag/dlmm + @meteora-ag/zap-sdk     │
+│  packages/keeper  (permissionless crank caller)                 │
+│  • CRANK_PRIVATE_KEY = gas/rent payer ONLY (never custodial)    │
+│  • triggers place_tranche / claim_fees on due vaults            │
+│   └── VaultSdk → OrderFlow Anchor program (on-chain vault)      │
+└───────────────────────────────┬──────────────────────────────────┘
+                                │ CPI (vault PDA signs invariant-secure calls)
+┌───────────────────────────────▼──────────────────────────────────┐
+│  packages/anchor (OrderFlow vault program)                      │
+│  • StrategyVault PDA per (owner, nonce) holds user funds        │
+│  • enforces price bracket, cadence, total cap on-chain          │
 └───────────────────────────────┬──────────────────────────────────┘
                                 │ CPI
 ┌───────────────────────────────▼──────────────────────────────────┐
-│  Meteora DLMM (lb_clmm) · Zap · DBC — Solana mainnet             │
+│  Meteora DLMM (lb_clmm) — Solana mainnet                         │
 └──────────────────────────────────────────────────────────────────┘
-
-packages/anchor — on-chain DcaStrategy ledger (Anchor, optional coordinator)
 ```
 
 ## Repo layout
@@ -48,10 +51,10 @@ packages/anchor — on-chain DcaStrategy ledger (Anchor, optional coordinator)
 | Path | What it is |
 |---|---|
 | `packages/core` | Shared types, constants, config, DLMM bin math (dependency-free) |
-| `packages/sdk` | `OrderFlowSdk` — wraps `@meteora-ag/dlmm` + `@meteora-ag/zap-sdk` |
+| `packages/sdk` | `VaultSdk` — builds OrderFlow vault instructions + DLMM CPI; `OrderFlowSdk` (legacy direct-DLMM) |
 | `packages/api` | Express read layer proxying Meteora's Data API |
-| `packages/keeper` | Cron/keeper: places tranches, re-pins bins, claims fees |
-| `packages/anchor` | Solana program storing DCA state on-chain (skeleton + tests) |
+| `packages/keeper` | Crank loop: triggers pre-authorized vault instructions |
+| `packages/anchor` | Solana program owning per-strategy vault PDAs (non-custodial) |
 | `apps/web` | React frontend: wizard + orderbook dashboard |
 
 ## Quick start
@@ -67,7 +70,7 @@ cp .env.example .env          # set RPC + keeper key for live execution
 npm run dev:api               # Express on :8080
 
 # 2) keeper (execution)
-npm run dev:keeper            # needs KEEPER_PRIVATE_KEY
+npm run dev:keeper            # needs CRANK_PRIVATE_KEY (gas payer, non-custodial)
 
 # 3) web
 npm run dev:web               # Vite on :5173, points at /api proxy
@@ -93,22 +96,39 @@ The shared core types (`packages/core/src/types.ts`) drive the whole system:
 ## How the DCA-with-yield loop works
 
 1. The **wizard** turns "amount + tranches + timeframe" into a set of price brackets.
-2. The **keeper** spreads those brackets across DLMM bins
-   (`spreadBinsBetweenBrackets` in `packages/core/src/bin-math.ts`) and places each
-   tranche via `@meteora-ag/dlmm` `createLimitOrder` — a real on-chain order.
-3. While price never reaches a bin, the order **still earns the LP fee share** on
-   swap flow that touches it (DLMM credits 50% of the limit-order fee portion to
-   order participants).
-4. The **keeper loop** claims those fees (above a threshold) and re-pins any LP
-   positions that drifted out of range.
+2. The owner signs a **non-custodial vault** transaction: `create_vault` (records the
+   bounds — token mint, price bracket, tranche size, cadence, total cap) plus
+   `deposit` (moves tokens into the program-owned vault PDA).
+3. The **keeper** is now a *permissionless crank caller*. It spreads each tranche
+   across a DLMM bin and triggers `place_tranche` — but the **on-chain program
+   re-validates** the cadence, price bracket, and remaining cap before it lets the
+   call through, signing the DLMM limit order as the vault PDA. A compromised or
+   malicious crank cannot exceed the bounds and cannot route funds anywhere the
+   vault does not own.
+4. While price never reaches a bin, the limit order **still earns the LP fee share**
+   on swap flow (DLMM credits 50% of the limit-order fee portion to participants).
+5. The keeper triggers `claim_fees`; fees and remaining principal return **to the
+   vault PDA**, never to the keeper. The owner can `withdraw` at any time.
+
+## Custody & security model
+
+**No party holds a private key for user funds.**
+
+- User tokens live in a `StrategyVault` PDA derived from `(owner, nonce)`. The
+  OrderFlow program is the only authority that can move them, via `invoke_signed`.
+- The keeper's `CRANK_PRIVATE_KEY` pays gas/rent only. It can spam
+  `place_tranche`/`claim_fees` harmlessly because every call is re-validated
+  against on-chain state.
+- `withdraw` and `cancel` are owner-signed and always available; the keeper can
+  never trigger them.
 
 ## Production notes
 
 - Replace the JSON `StrategyStore` with a real DB for horizontal keeper scaling.
-- Set a KEEPER key on a dedicated cluster; guard with the Anchor program if you
-  want on-chain authorization of `record_tranche`.
-- The Anchor program (`packages/anchor`) is an optional coordinator. Execution is
-  delegated to Meteora's battle-tested programs via CPI / the official SDKs.
+- `CRANK_PRIVATE_KEY` is a disposable gas wallet. `KEEPER_PRIVATE_KEY` is kept as a
+  legacy alias but carries **no custodial power** in the vault flow.
+- **Audit the Anchor program (`packages/anchor`) before mainnet custody.** The
+  program is the trust floor; nothing else matters without it.
 
 ## Safety
 

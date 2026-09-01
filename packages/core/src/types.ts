@@ -39,6 +39,13 @@ export interface DcaStrategy {
   updatedAt: number;
   /** List of per-tranche orders. */
   orders: DcaOrder[];
+  // ── Non-custodial vault linkage ──────────────────────────────────────────
+  /** On-chain vault nonce (u64 LE). PDA = findProgramAddress("vault", owner, nonce). */
+  vaultNonce: number | null;
+  /** If non-null, the strategy has an on-chain vault PDA and all execution
+   *  is routed through it. The keeper is now a permissionless crank caller
+   *  who never holds user funds. */
+  vaultAddress: string | null;
 }
 
 export type DcaStatus =

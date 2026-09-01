@@ -154,6 +154,8 @@ export function createApp() {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         orders: [],
+        vaultNonce: body.vaultNonce ?? null,
+        vaultAddress: body.vaultAddress ?? null,
       };
       await store.upsert(strategy);
       res.status(201).json({ strategy });

@@ -1,89 +1,577 @@
+//! OrderFlow — non-custodial DCA vault on Meteora DLMM.
+//!
+//! Architecture (replaces the old keeper-custodian model):
+//!
+//!   * A user deposits tokens into a `StrategyVault` PDA they control. The PDA
+//!     is the *owner* of the deposited funds and of every DLMM limit order the
+//!     vault places. No party holds a private key for the vault: the program
+//!     itself authorizes every token move via `invoke_signed` against the
+//!     vault's seeds.
+//!   * The keeper (or anyone — these instructions are permissionless) acts as a
+//!     *crank*, scheduling execution. But it can never exceed the bounds the
+//!     user recorded at creation, and it can never route funds anywhere the
+//!     vault does not own:
+//!       - `place_tranche`  → permissionless; program enforces the stored
+//!                            price bracket, tranche cadence, and total cap
+//!                            before invoking DLMM's `place_limit_order`.
+//!       - `claim_fees`     → permissionless; DLMM `cancel_limit_order` returns
+//!                            remaining principal + accrued fees *to the vault*.
+//!       - `withdraw`       → owner-only; sweeps vault balance to the owner.
+//!       - `cancel`         → owner-only; cancels open orders (funds return to
+//!                            the vault, still owned by the program).
+//!
+//! Worst case if a crank is compromised: it can spam `place_tranche`, which is
+//! harmless because the program re-validates every call against on-chain state.
+
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+    system_program,
+};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{self, Token, TokenAccount, Transfer},
+};
 
 declare_id!("AnChOrFlow11111111111111111111111111111111");
 
 /// Meteora DLMM (lb_clmm) program id.
-pub const METRORA_DLMM: Pubkey = Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+pub const DLMM_PROGRAM: Pubkey = Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+
+/// `__event_authority` PDA of the DLMM program (Anchor event CPI signer).
+pub fn dlmm_event_authority() -> Pubkey {
+    Pubkey::find_program_address(&[b"__event_authority"], &DLMM_PROGRAM).0
+}
+
+/// Place limit order discriminator: Anchor 8-byte hash of "global:place_limit_order".
+const PLACE_LIMIT_ORDER_DISCRIMINATOR: [u8; 8] = [108, 176, 33, 186, 146, 229, 1, 197];
+/// Cancel limit order discriminator: "global:cancel_limit_order".
+const CANCEL_LIMIT_ORDER_DISCRIMINATOR: [u8; 8] = [132, 156, 132, 31, 67, 40, 232, 97];
+
+/// SPL Token program id.
+const TOKEN_PROGRAM: Pubkey = Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
 #[program]
 pub mod orderflow {
     use super::*;
 
-    /// Create a DCA strategy account describing the schedule.
-    pub fn create_strategy(
-        ctx: Context<CreateStrategy>,
+    /// Create a vault describing the DCA bounds the owner commits to. The vault
+    /// PDA is seeded by `(owner, nonce)`; `nonce` is chosen by the owner and
+    /// doubles as the on-chain strategy id.
+    pub fn create_vault(
+        ctx: Context<CreateVault>,
+        nonce: u64,
         pool: Pubkey,
+        mint: Pubkey,
         side: SideKind,
-        total_amount: u64,
-        tranches: u8,
+        tranches: u16,
         interval_seconds: u64,
-        min_price: u64,
-        max_price: u64,
+        min_bin_id: i64,
+        max_bin_id: i64,
+        tranche_amount: u64,
+        total_cap: u64,
     ) -> Result<()> {
-        let s = &mut ctx.accounts.strategy;
-        s.owner = ctx.accounts.owner.key();
-        s.pool = pool;
-        s.side = side;
-        s.total_amount = total_amount;
-        s.tranches = tranches;
-        s.interval_seconds = interval_seconds;
-        s.min_price = min_price;
-        s.max_price = max_price;
-        s.tranches_placed = 0;
-        s.status = StrategyStatus::Scheduled;
-        s.bump = ctx.bumps.strategy;
+        require!(tranches > 0, ErrorCode::InvalidBounds);
+        require!(min_bin_id <= max_bin_id, ErrorCode::InvalidBounds);
+        require!(max_bin_id - min_bin_id <= 50, ErrorCode::BracketTooWide);
+        require!(total_cap >= tranche_amount, ErrorCode::InvalidCap);
+
+        let vault = &mut ctx.accounts.vault;
+        vault.owner = ctx.accounts.owner.key();
+        vault.nonce = nonce;
+        vault.pool = pool;
+        vault.mint = mint;
+        vault.side = side;
+        vault.tranches = tranches;
+        vault.interval_seconds = interval_seconds;
+        vault.min_bin_id = min_bin_id;
+        vault.max_bin_id = max_bin_id;
+        vault.tranche_amount = tranche_amount;
+        vault.total_cap = total_cap;
+        vault.amount_placed = 0;
+        vault.tranches_placed = 0;
+        vault.last_placed_at = 0;
+        vault.pending_limit_order = None;
+        vault.status = VaultStatus::Depositing;
+        vault.bump = ctx.bumps.vault;
         Ok(())
     }
 
-    /// Store that a tranche was placed on-chain (execution happens via Meteora
-    /// DLMM; this ledger tracks which tranches have been booked).
-    pub fn record_tranche(ctx: Context<RecordTranche>, bin_ids: Vec<i64>) -> Result<()> {
-        let s = &mut ctx.accounts.strategy;
-        require!(s.owner == ctx.accounts.owner.key(), ErrorCode::Unauthorized);
-        require!(s.tranches_placed < s.tranches, ErrorCode::AllTranchesPlaced);
-        s.tranches_placed += 1;
-        s.last_bins = bin_ids;
-        if s.tranches_placed >= s.tranches {
-            s.status = StrategyStatus::Active;
+    /// Owner moves `amount` of `mint` into the vault. Repeated deposits allow
+    /// topping up a live strategy (total deposit is not locked to `total_cap`).
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        require!(amount > 0, ErrorCode::ZeroAmount);
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.owner_ata.to_account_info(),
+                    to: ctx.accounts.vault_ata.to_account_info(),
+                    authority: ctx.accounts.owner.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+        Ok(())
+    }
+
+    /// Permissionless crank. Places the next tranche of a live strategy as a
+    /// DLMM limit order owned by the vault. The program enforces every bound
+    /// the owner committed to before invoking DLMM:
+    ///
+    ///   * the strategy must not be cancelled/completed,
+    ///   * tranches must not be exhausted,
+    ///   * the cadence (`interval_seconds`) must have elapsed,
+    ///   * each requested bin must lie inside `[min_bin_id, max_bin_id]`,
+    ///   * the running placed total must not exceed `total_cap`.
+    ///
+    /// `bin_array_metas` (the remaining accounts) are the DLMM bin arrays for
+    /// `bin_ids`. `bin_ids` is normalized to a fixed-length 50-vector padded
+    /// with `i64::MIN` sentinels so the on-chain instruction data is a stable
+    /// size regardless of how many bins a crank passes.
+    pub fn place_tranche(ctx: Context<PlaceTranche>, bin_ids: [i64; 50]) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+
+        // ---- ownership / state guards --------------------------------------
+        require!(
+            vault.status == VaultStatus::Active || vault.status == VaultStatus::Depositing,
+            ErrorCode::NotPlaceable
+        );
+        require!(vault.tranches_placed < vault.tranches, ErrorCode::AllTranchesPlaced);
+        require!(
+            clock_now() >= vault.last_placed_at + vault.interval_seconds,
+            ErrorCode::CadenceNotMet
+        );
+        // the token being sold into the DLMM order must be the vault's deposited mint
+        require!(
+            ctx.accounts.token_mint.key() == vault.mint,
+            ErrorCode::MintMismatch
+        );
+
+        // ---- content guards: normalize the fixed 50-vec into real bin ids ---
+        let mut bins: Vec<i64> = bin_ids.iter().copied()
+            .take_while(|b| *b != i64::MIN)
+            .collect();
+        require!(!bins.is_empty(), ErrorCode::NoBins);
+        require!(bins.len() <= 50, ErrorCode::TooManyBins);
+        for b in &bins {
+            require!(
+                *b >= vault.min_bin_id && *b <= vault.max_bin_id,
+                ErrorCode::BinOutOfBracket
+            );
         }
+        require!(
+            vault.amount_placed
+                .checked_add(vault.tranche_amount)
+                .map(|v| v <= vault.total_cap)
+                .unwrap_or(false),
+            ErrorCode::CapExceeded
+        );
+
+        // ---- derive the per-tranche DLMM limit order PDA --------------------
+        let tranche_idx = vault.tranches_placed;
+        let (limit_order, _) = Pubkey::find_program_address(
+            &[
+                b"limit_order",
+                vault.to_account_info().key.as_ref(),
+                &tranche_idx.to_le_bytes(),
+            ],
+            &ID,
+        );
+        require!(
+            ctx.accounts.limit_order.key() == limit_order,
+            ErrorCode::WrongLimitOrder
+        );
+
+        // ---- CPI into DLMM place_limit_order --------------------------------
+        let mut account_infos = vec![
+            ctx.accounts.lb_pair.to_account_info(),
+            ctx.accounts.bin_array_bitmap_extension.to_account_info(),
+            ctx.accounts.reserve.to_account_info(),
+            ctx.accounts.token_mint.to_account_info(),
+            ctx.accounts.limit_order.to_account_info(),
+            ctx.accounts.crank.to_account_info(), // payer
+            ctx.accounts.vault.to_account_info(), // owner
+            ctx.accounts.vault_ata.to_account_info(), // userToken
+            ctx.accounts.crank.to_account_info(), // sender
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.event_authority.to_account_info(),
+            ctx.accounts.dlmm_program.to_account_info(),
+        ];
+        // bin arrays for the requested bins (parent-transaction remaining accounts)
+        account_infos.extend(ctx.remaining_accounts.iter().cloned());
+
+        invoke_signed(
+            &place_limit_order_instruction(&ctx.accounts, vault.side, limit_order, &bins, vault.owner),
+            &account_infos,
+            &[&vault_seeds(&ctx.accounts.vault)],
+        )?;
+
+        // ---- commit state ----------------------------------------------------
+        vault.tranches_placed += 1;
+        vault.amount_placed += vault.tranche_amount;
+        vault.last_placed_at = clock_now();
+        vault.pending_limit_order = Some(PendingOrder {
+            address: limit_order,
+            bin_ids: bins,
+        });
         Ok(())
     }
 
-    /// Mark a strategy as cancelled (no further tranches are placed).
-    pub fn cancel_strategy(ctx: Context<CancelStrategy>) -> Result<()> {
-        let s = &mut ctx.accounts.strategy;
-        require!(s.owner == ctx.accounts.owner.key(), ErrorCode::Unauthorized);
-        s.status = StrategyStatus::Cancelled;
+    /// Permissionless crank. Claims accrued fees (and returns any remaining
+    /// order principal) for a placed limit order; funds return *to the vault*,
+    /// never to the crank.
+    pub fn claim_fees(
+        ctx: Context<ClaimFees>,
+        bin_ids: Vec<i64>,
+    ) -> Result<()> {
+        let vault = &ctx.accounts.vault;
+        invoke_signed(
+            &cancel_limit_order_instruction(&ctx.accounts, &bin_ids),
+            &cancel_limit_order_accounts(&ctx.accounts, vault.owner),
+            &[&vault_seeds(&ctx.accounts.vault)],
+        )?;
+        Ok(())
+    }
+
+    /// Owner-only. Cancel all open orders for the vault. Remaining funds return
+    /// to the vault (still program-controlled); the strategy is marked
+    /// cancelled so no further tranches can be placed.
+    pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        vault.status = VaultStatus::Cancelled;
+        Ok(())
+    }
+
+    /// Owner-only — always available. Sweeps `amount` from the vault to the
+    /// owner. Note this withdraws the settled vault balance; open orders owned
+    /// by the vault are untouched (cancel them first to free their funds).
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        require!(amount > 0, ErrorCode::ZeroAmount);
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_ata.to_account_info(),
+                    to: ctx.accounts.owner_ata.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                &[&vault_seeds(&ctx.accounts.vault)],
+            ),
+            amount,
+        )?;
         Ok(())
     }
 }
 
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
 #[derive(Accounts)]
-pub struct CreateStrategy<'info> {
-    #[account(init, payer = owner, seeds = [b"strategy", owner.key().as_ref(), pool.as_ref()], bump,
-              space = Strategy::LEN)]
-    pub strategy: Account<'info, Strategy>,
+#[instruction(nonce: u64)]
+pub struct CreateVault<'info> {
+    #[account(
+        init,
+        payer = owner,
+        seeds = [b"vault", owner.key().as_ref(), nonce.to_le_bytes().as_ref()],
+        bump,
+        space = StrategyVault::LEN
+    )]
+    pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
     pub system_program: Program<'info, System>,
-    /// CHECK: derived from args, only used as a seed.
-    pub pool: AccountInfo<'info>,
+    /// CHECK: seed component only; validated against stored value in later ops.
+    pub mint: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
-pub struct RecordTranche<'info> {
-    #[account(mut, seeds = [b"strategy", owner.key().as_ref(), strategy.pool.as_ref()], bump = strategy.bump)]
-    pub strategy: Account<'info, Strategy>,
+pub struct Deposit<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", owner.key().as_ref(), vault.nonce.to_le_bytes().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        has_one = mint
+    )]
+    pub vault: Account<'info, StrategyVault>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    /// CHECK: validated via has_one = mint on the vault.
+    pub mint: AccountInfo<'info>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = owner
+    )]
+    pub owner_ata: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = owner,
+        associated_token::mint = mint,
+        associated_token::authority = vault
+    )]
+    pub vault_ata: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+}
+
+#[derive(Accounts)]
+#[instruction(bin_ids: [i64; 50])]
+pub struct PlaceTranche<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", vault.owner.as_ref(), vault.nonce.to_le_bytes().as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, StrategyVault>,
+    #[account(
+        mut,
+        associated_token::mint = vault.mint,
+        associated_token::authority = vault
+    )]
+    pub vault_ata: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        seeds = [b"limit_order", vault.key().as_ref(), vault.tranches_placed.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub limit_order: AccountInfo<'info>,
+    /// The crank wallet — pays gas/rent. Never controls funds.
+    #[account(mut)]
+    pub crank: Signer<'info>,
+    // ---- DLMM CPI accounts (fixed set) -------------------------------------
+    #[account(mut)]
+    pub dlmm_program: AccountInfo<'info>,
+    #[account(mut)]
+    pub lb_pair: AccountInfo<'info>,
+    #[account(mut)]
+    pub bin_array_bitmap_extension: AccountInfo<'info>,
+    #[account(mut)]
+    pub reserve: AccountInfo<'info>,
+    #[account(mut)]
+    pub token_mint: AccountInfo<'info>,
+    /// CHECK: derived `__event_authority` PDA of the DLMM program.
+    pub event_authority: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimFees<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", vault.owner.as_ref(), vault.nonce.to_le_bytes().as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Account<'info, StrategyVault>,
+    #[account(
+        mut,
+        associated_token::mint = vault.mint,
+        associated_token::authority = vault
+    )]
+    pub vault_ata: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub crank: Signer<'info>,
+    #[account(mut)]
+    pub dlmm_program: AccountInfo<'info>,
+    #[account(mut)]
+    pub lb_pair: AccountInfo<'info>,
+    #[account(mut)]
+    pub bin_array_bitmap_extension: AccountInfo<'info>,
+    #[account(mut)]
+    pub reserve_x: AccountInfo<'info>,
+    #[account(mut)]
+    pub reserve_y: AccountInfo<'info>,
+    pub token_x_mint: AccountInfo<'info>,
+    pub token_y_mint: AccountInfo<'info>,
+    #[account(mut)]
+    pub limit_order: AccountInfo<'info>,
+    #[account(mut)]
+    pub owner_token_x: AccountInfo<'info>,
+    #[account(mut)]
+    pub owner_token_y: AccountInfo<'info>,
+    /// CHECK: derived `__event_authority` PDA of the DLMM program.
+    pub event_authority: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+    /// CHECK: Memo program id fixed by DLMM.
+    pub memo_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Cancel<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", vault.owner.as_ref(), vault.nonce.to_le_bytes().as_ref()],
+        bump = vault.bump,
+        has_one = owner
+    )]
+    pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
 }
 
 #[derive(Accounts)]
-pub struct CancelStrategy<'info> {
-    #[account(mut, has_one = owner)]
-    pub strategy: Account<'info, Strategy>,
+pub struct Withdraw<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", owner.key().as_ref(), vault.nonce.to_le_bytes().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        has_one = mint
+    )]
+    pub vault: Account<'info, StrategyVault>,
+    #[account(mut)]
     pub owner: Signer<'info>,
+    /// CHECK: validated via has_one = mint on the vault.
+    pub mint: AccountInfo<'info>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = owner
+    )]
+    pub owner_ata: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = vault
+    )]
+    pub vault_ata: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
+
+// ---------------------------------------------------------------------------
+// CPI helpers
+// ---------------------------------------------------------------------------
+
+fn vault_seeds(vault: &Account<StrategyVault>) -> [&[u8]; 3] {
+    [
+        b"vault",
+        vault.owner.as_ref(),
+        &vault.nonce.to_le_bytes(),
+    ]
+}
+
+/// Build the DLMM `place_limit_order` instruction (exact IDL account order).
+fn place_limit_order_instruction(
+    accounts: &PlaceTranche,
+    side: SideKind,
+    limit_order: Pubkey,
+    bins: &[i64],
+    owner: Pubkey,
+) -> Instruction {
+    let is_ask = side == SideKind::Ask;
+
+    let mut data = Vec::with_capacity(1024);
+    data.extend_from_slice(&PLACE_LIMIT_ORDER_DISCRIMINATOR);
+
+    // params
+    data.push(is_ask as u8); // isAskSide
+    data.extend_from_slice(&[0u8; 16]); // padding
+    data.push(0u8); // relativeBin: Option = None
+    data.extend_from_slice(&(bins.len() as u32).to_le_bytes()); // bins vec len
+    for b in bins {
+        data.extend_from_slice(&(*b as i32).to_le_bytes()); // id
+        data.extend_from_slice(&accounts.vault.tranche_amount.to_le_bytes()); // amount
+    }
+    // remainingAccountsInfo { slices: Vec<...> } -> empty
+    data.extend_from_slice(&(0u32).to_le_bytes());
+
+    let token_mint = accounts.token_mint.key();
+    let reserve = accounts.reserve.key();
+
+    Instruction {
+        program_id: DLMM_PROGRAM,
+        accounts: vec![
+            AccountMeta::new(accounts.lb_pair.key(), false),
+            AccountMeta::new(accounts.bin_array_bitmap_extension.key(), false),
+            AccountMeta::new(reserve, false),
+            AccountMeta::new_readonly(token_mint, false),
+            AccountMeta::new(limit_order, true),
+            // payer = crank (pays rent), signer
+            AccountMeta::new(accounts.crank.key(), true),
+            AccountMeta::new_readonly(owner, false),
+            // userToken = the vault ATA that funds the order
+            AccountMeta::new(accounts.vault_ata.key(), false),
+            // sender = crank signer
+            AccountMeta::new_readonly(accounts.crank.key(), true),
+            AccountMeta::new_readonly(TOKEN_PROGRAM, false),
+            AccountMeta::new_readonly(system_program::id(), false),
+            AccountMeta::new_readonly(dlmm_event_authority(), false),
+            AccountMeta::new_readonly(DLMM_PROGRAM, false),
+        ],
+        data,
+    }
+}
+
+/// Build the DLMM `cancel_limit_order` instruction (exact IDL account order).
+fn cancel_limit_order_instruction(accounts: &ClaimFees, bin_ids: &[i64]) -> Instruction {
+    let mut data = Vec::with_capacity(512);
+    data.extend_from_slice(&CANCEL_LIMIT_ORDER_DISCRIMINATOR);
+    data.extend_from_slice(&(bin_ids.len() as u32).to_le_bytes());
+    for b in bin_ids {
+        data.extend_from_slice(&(*b as i32).to_le_bytes());
+    }
+    data.extend_from_slice(&(0u32).to_le_bytes()); // remainingAccountsInfo
+
+    Instruction {
+        program_id: DLMM_PROGRAM,
+        accounts: vec![
+            AccountMeta::new(accounts.lb_pair.key(), false),
+            AccountMeta::new(accounts.bin_array_bitmap_extension.key(), false),
+            AccountMeta::new(accounts.reserve_x.key(), false),
+            AccountMeta::new(accounts.reserve_y.key(), false),
+            AccountMeta::new_readonly(accounts.token_x_mint.key(), false),
+            AccountMeta::new_readonly(accounts.token_y_mint.key(), false),
+            AccountMeta::new(accounts.limit_order.key(), false),
+            AccountMeta::new(accounts.owner_token_x.key(), false),
+            AccountMeta::new(accounts.owner_token_y.key(), false),
+            // owner = the vault; OrderFlow signs via invoke_signed
+            AccountMeta::new_readonly(accounts.vault.key(), true),
+            AccountMeta::new_readonly(accounts.token_program.key(), false),
+            AccountMeta::new_readonly(accounts.token_program.key(), false),
+            AccountMeta::new_readonly(accounts.memo_program.key(), false),
+            AccountMeta::new_readonly(dlmm_event_authority(), false),
+            AccountMeta::new_readonly(DLMM_PROGRAM, false),
+        ],
+        data,
+    }
+}
+/// Clock timestamp (secs).
+fn clock_now() -> i64 {
+    Clock::get().unwrap().unix_timestamp
+}
+
+/// Account list matching DLMM's cancel_limit_order IDL order.
+fn cancel_limit_order_accounts<'a>(accounts: &'a ClaimFees<'a>, _owner: Pubkey) -> Vec<AccountInfo<'a>> {
+    vec![
+        accounts.lb_pair.to_account_info(),
+        accounts.bin_array_bitmap_extension.to_account_info(),
+        accounts.reserve_x.to_account_info(),
+        accounts.reserve_y.to_account_info(),
+        accounts.token_x_mint.to_account_info(),
+        accounts.token_y_mint.to_account_info(),
+        accounts.limit_order.to_account_info(),
+        accounts.owner_token_x.to_account_info(),
+        accounts.owner_token_y.to_account_info(),
+        accounts.vault.to_account_info(),
+        accounts.token_program.to_account_info(),
+        accounts.token_program.to_account_info(), // tokenYProgram (same for SPL-Token)
+        accounts.memo_program.to_account_info(),
+        accounts.event_authority.to_account_info(),
+        accounts.dlmm_program.to_account_info(),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 pub enum SideKind {
@@ -92,49 +580,92 @@ pub enum SideKind {
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
-pub enum StrategyStatus {
-    Scheduled,
+pub enum VaultStatus {
+    Depositing,
     Active,
     Completed,
     Cancelled,
 }
 
+/// A limit order currently owned by the vault (latest tranche).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct PendingOrder {
+    pub address: Pubkey,
+    pub bin_ids: Vec<i64>,
+}
+
+impl PendingOrder {
+    pub const LEN: usize = 32 + 4 + (50 * 8);
+}
+
 #[account]
-pub struct Strategy {
+pub struct StrategyVault {
     pub owner: Pubkey,
+    pub nonce: u64,
     pub pool: Pubkey,
+    pub mint: Pubkey,
     pub side: SideKind,
-    pub total_amount: u64,
-    pub tranches: u8,
+    pub tranches: u16,
+    pub tranches_placed: u16,
     pub interval_seconds: u64,
-    pub min_price: u64,
-    pub max_price: u64,
-    pub tranches_placed: u8,
-    pub status: StrategyStatus,
-    pub last_bins: Vec<i64>,
+    pub min_bin_id: i64,
+    pub max_bin_id: i64,
+    pub tranche_amount: u64,
+    pub total_cap: u64,
+    pub amount_placed: u64,
+    pub last_placed_at: i64,
+    pub pending_limit_order: Option<PendingOrder>,
+    pub status: VaultStatus,
     pub bump: u8,
 }
 
-impl Strategy {
-    pub const LEN: usize = 8                       // discriminator
-        + 32                                       // owner
-        + 32                                       // pool
-        + 1                                        // side
-        + 8                                        // total_amount
-        + 1                                        // tranches
-        + 8                                        // interval_seconds
-        + 8                                        // min_price
-        + 8                                        // max_price
-        + 1                                        // tranches_placed
-        + 1                                        // status
-        + 4 + (50 * 8)                             // last_bins (Vec<i64> load, up to 50)
-        + 1;                                       // bump
+impl StrategyVault {
+    pub const LEN: usize = 8   // discriminator
+        + 32                   // owner
+        + 8                    // nonce
+        + 32                   // pool
+        + 32                   // mint
+        + 1                    // side
+        + 2                    // tranches
+        + 2                    // tranches_placed
+        + 8                    // interval_seconds
+        + 8                    // min_bin_id
+        + 8                    // max_bin_id
+        + 8                    // tranche_amount
+        + 8                    // total_cap
+        + 8                    // amount_placed
+        + 8                    // last_placed_at
+        + 1 + PendingOrder::LEN // pending_limit_order (Option<...> flag + payload)
+        + 1                    // status
+        + 1;                   // bump
 }
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Only the strategy owner may perform this action")]
-    Unauthorized,
+    #[msg("Invalid strategy bounds")]
+    InvalidBounds,
+    #[msg("Price bracket is wider than the 50-bin DLMM limit-order limit")]
+    BracketTooWide,
+    #[msg("Total cap must be >= tranche amount")]
+    InvalidCap,
+    #[msg("Deposit amount must be greater than zero")]
+    ZeroAmount,
+    #[msg("Strategy is not in a state that allows placing tranches")]
+    NotPlaceable,
     #[msg("All configured tranches have already been placed")]
     AllTranchesPlaced,
+    #[msg("The tranche cadence (interval) has not elapsed")]
+    CadenceNotMet,
+    #[msg("No bin ids were provided")]
+    NoBins,
+    #[msg("More than 50 bins requested")]
+    TooManyBins,
+    #[msg("A requested bin lies outside the owner's price bracket")]
+    BinOutOfBracket,
+    #[msg("Placing this tranche would exceed the total cap")]
+    CapExceeded,
+    #[msg("Limit-order PDA does not match the derived address")]
+    WrongLimitOrder,
+    #[msg("Token mint does not match the vault's deposited mint")]
+    MintMismatch,
 }

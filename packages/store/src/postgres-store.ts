@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS strategies (
   rebalance_frequency_ms INTEGER NOT NULL DEFAULT 3600000,
   status TEXT NOT NULL,
   created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
+  updated_at BIGINT NOT NULL,
+  vault_nonce BIGINT,
+  vault_address TEXT
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -107,6 +109,8 @@ export class PostgresStrategyStore {
       status: row.status as DcaStatus,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      vaultNonce: row.vault_nonce != null ? Number(row.vault_nonce) : null,
+      vaultAddress: row.vault_address ?? null,
       orders: [],
     };
   }
@@ -176,8 +180,8 @@ export class PostgresStrategyStore {
   async upsert(s: DcaStrategy): Promise<void> {
     await this.tx(async (client) => {
       await client.query(
-        `INSERT INTO strategies (strategy_id, owner, signature, pool, token_mint, side, total_amount, total_amount_label, tranches, interval_seconds, min_price, max_price, slippage_bps, rebalance_frequency_ms, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        `INSERT INTO strategies (strategy_id, owner, signature, pool, token_mint, side, total_amount, total_amount_label, tranches, interval_seconds, min_price, max_price, slippage_bps, rebalance_frequency_ms, status, created_at, updated_at, vault_nonce, vault_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
          ON CONFLICT (strategy_id) DO UPDATE SET
            owner = EXCLUDED.owner,
            signature = EXCLUDED.signature,
@@ -193,7 +197,9 @@ export class PostgresStrategyStore {
            slippage_bps = EXCLUDED.slippage_bps,
            rebalance_frequency_ms = EXCLUDED.rebalance_frequency_ms,
            status = EXCLUDED.status,
-           updated_at = EXCLUDED.updated_at`,
+           updated_at = EXCLUDED.updated_at,
+           vault_nonce = EXCLUDED.vault_nonce,
+           vault_address = EXCLUDED.vault_address`,
         [
           s.strategyId,
           s.owner,
@@ -212,6 +218,8 @@ export class PostgresStrategyStore {
           s.status,
           s.createdAt,
           s.updatedAt,
+          s.vaultNonce ?? null,
+          s.vaultAddress ?? null,
         ]
       );
 
