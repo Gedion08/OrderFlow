@@ -6,7 +6,7 @@ cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [programs.localnet]
-orderflow = "AnChOrFlow11111111111111111111111111111111"
+orderflow = "AnchorFLow111111111111111111111111111111111"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

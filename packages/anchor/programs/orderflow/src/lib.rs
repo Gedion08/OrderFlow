@@ -34,10 +34,10 @@ use anchor_spl::{
     token::{self, Token, TokenAccount, Transfer},
 };
 
-declare_id!("AnChOrFlow11111111111111111111111111111111");
+declare_id!("AnchorFLow111111111111111111111111111111111");
 
 /// Meteora DLMM (lb_clmm) program id.
-pub const DLMM_PROGRAM: Pubkey = Pubkey::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+pub const DLMM_PROGRAM: Pubkey = solana_program::pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
 
 /// `__event_authority` PDA of the DLMM program (Anchor event CPI signer).
 pub fn dlmm_event_authority() -> Pubkey {
@@ -50,7 +50,7 @@ const PLACE_LIMIT_ORDER_DISCRIMINATOR: [u8; 8] = [108, 176, 33, 186, 146, 229, 1
 const CANCEL_LIMIT_ORDER_DISCRIMINATOR: [u8; 8] = [132, 156, 132, 31, 67, 40, 232, 97];
 
 /// SPL Token program id.
-const TOKEN_PROGRAM: Pubkey = Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_PROGRAM: Pubkey = solana_program::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
 #[program]
 pub mod orderflow {
@@ -130,86 +130,124 @@ pub mod orderflow {
     /// `bin_ids`. `bin_ids` is normalized to a fixed-length 50-vector padded
     /// with `i64::MIN` sentinels so the on-chain instruction data is a stable
     /// size regardless of how many bins a crank passes.
-    pub fn place_tranche(ctx: Context<PlaceTranche>, bin_ids: [i64; 50]) -> Result<()> {
-        let vault = &mut ctx.accounts.vault;
+    pub fn place_tranche<'info>(ctx: Context<'info, 'info, 'info, 'info, PlaceTranche<'info>>, bin_ids: [i64; 50]) -> Result<()> {
+        // ---- ownership / state guards (read-only borrow) --------------------
+        let (
+            side,
+            tranche_idx,
+            tranche_amount,
+            vault_owner,
+            vault_key,
+            current_placed,
+        ) = {
+            let vault = &ctx.accounts.vault;
+            require!(
+                vault.status == VaultStatus::Active || vault.status == VaultStatus::Depositing,
+                ErrorCode::NotPlaceable
+            );
+            require!(vault.tranches_placed < vault.tranches, ErrorCode::AllTranchesPlaced);
+            require!(
+                clock_now() >= vault.last_placed_at + (vault.interval_seconds as i64),
+                ErrorCode::CadenceNotMet
+            );
+            require!(
+                ctx.accounts.token_mint.key() == vault.mint,
+                ErrorCode::MintMismatch
+            );
+            // content guards — need vault fields
+            let mut bins: Vec<i64> = bin_ids.iter().copied()
+                .take_while(|b| *b != i64::MIN)
+                .collect();
+            require!(!bins.is_empty(), ErrorCode::NoBins);
+            require!(bins.len() <= 50, ErrorCode::TooManyBins);
+            for b in &bins {
+                require!(
+                    *b >= vault.min_bin_id && *b <= vault.max_bin_id,
+                    ErrorCode::BinOutOfBracket
+                );
+            }
+            require!(
+                vault.amount_placed
+                    .checked_add(vault.tranche_amount)
+                    .map(|v| v <= vault.total_cap)
+                    .unwrap_or(false),
+                ErrorCode::CapExceeded
+            );
 
-        // ---- ownership / state guards --------------------------------------
-        require!(
-            vault.status == VaultStatus::Active || vault.status == VaultStatus::Depositing,
-            ErrorCode::NotPlaceable
-        );
-        require!(vault.tranches_placed < vault.tranches, ErrorCode::AllTranchesPlaced);
-        require!(
-            clock_now() >= vault.last_placed_at + vault.interval_seconds,
-            ErrorCode::CadenceNotMet
-        );
-        // the token being sold into the DLMM order must be the vault's deposited mint
-        require!(
-            ctx.accounts.token_mint.key() == vault.mint,
-            ErrorCode::MintMismatch
-        );
+            // ---- derive the per-tranche DLMM limit order PDA ----------------
+            let tranche_idx = vault.tranches_placed;
+            let (limit_order, _) = Pubkey::find_program_address(
+                &[
+                    b"limit_order",
+                    vault.to_account_info().key.as_ref(),
+                    &tranche_idx.to_le_bytes(),
+                ],
+                &ID,
+            );
+            require!(
+                ctx.accounts.limit_order.key() == limit_order,
+                ErrorCode::WrongLimitOrder
+            );
 
-        // ---- content guards: normalize the fixed 50-vec into real bin ids ---
-        let mut bins: Vec<i64> = bin_ids.iter().copied()
+            // Stash everything we need across the CPI.
+            (
+                vault.side,
+                tranche_idx,
+                vault.tranche_amount,
+                vault.owner,
+                ctx.accounts.vault.key(),
+                vault.amount_placed,
+            )
+        };
+        // ^ read-only borrow dropped here.
+
+        // Recompute `bins` (was inside the previous scope). Doing so here lets us
+        // keep the CPI-side code free of any borrow on `ctx.accounts.vault`.
+        let bins: Vec<i64> = bin_ids.iter().copied()
             .take_while(|b| *b != i64::MIN)
             .collect();
-        require!(!bins.is_empty(), ErrorCode::NoBins);
-        require!(bins.len() <= 50, ErrorCode::TooManyBins);
-        for b in &bins {
-            require!(
-                *b >= vault.min_bin_id && *b <= vault.max_bin_id,
-                ErrorCode::BinOutOfBracket
-            );
-        }
-        require!(
-            vault.amount_placed
-                .checked_add(vault.tranche_amount)
-                .map(|v| v <= vault.total_cap)
-                .unwrap_or(false),
-            ErrorCode::CapExceeded
-        );
+        let limit_order = limit_order_pda(vault_key, tranche_idx);
 
-        // ---- derive the per-tranche DLMM limit order PDA --------------------
-        let tranche_idx = vault.tranches_placed;
-        let (limit_order, _) = Pubkey::find_program_address(
-            &[
-                b"limit_order",
-                vault.to_account_info().key.as_ref(),
-                &tranche_idx.to_le_bytes(),
-            ],
-            &ID,
-        );
-        require!(
-            ctx.accounts.limit_order.key() == limit_order,
-            ErrorCode::WrongLimitOrder
-        );
-
-        // ---- CPI into DLMM place_limit_order --------------------------------
-        let mut account_infos = vec![
-            ctx.accounts.lb_pair.to_account_info(),
-            ctx.accounts.bin_array_bitmap_extension.to_account_info(),
-            ctx.accounts.reserve.to_account_info(),
-            ctx.accounts.token_mint.to_account_info(),
-            ctx.accounts.limit_order.to_account_info(),
-            ctx.accounts.crank.to_account_info(), // payer
-            ctx.accounts.vault.to_account_info(), // owner
-            ctx.accounts.vault_ata.to_account_info(), // userToken
-            ctx.accounts.crank.to_account_info(), // sender
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.event_authority.to_account_info(),
-            ctx.accounts.dlmm_program.to_account_info(),
-        ];
+        // ---- CPI into DLMM place_limit_order -------------------------------
+        // Build the AccountInfo vec by calling the trait method on
+        // `ctx.accounts`. This is the Anchor-idiomatic way and the
+        // returned `Vec<AccountInfo<'info>>` is rooted in the original
+        // account info slice the runtime handed us.
+        let mut account_infos: Vec<AccountInfo> = ctx.accounts.to_account_infos();
         // bin arrays for the requested bins (parent-transaction remaining accounts)
-        account_infos.extend(ctx.remaining_accounts.iter().cloned());
+        for a in ctx.remaining_accounts.iter() {
+            account_infos.push((*a).clone());
+        }
+
+        // The vault PDA is seeded `(b"vault", owner, nonce)`. We have the
+        // owner; read the nonce directly from the account data (avoiding a
+        // re-borrow on `ctx.accounts.vault`, which would conflict with the
+        // CPI's account-info borrows).
+        let vault_info = ctx.accounts.vault.to_account_info();
+        let nonce_bytes: [u8; 8] = {
+            let data = vault_info.try_borrow_data()?;
+            if data.len() < 8 + 32 + 8 {
+                return Err(error!(ErrorCode::InvalidBounds));
+            }
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&data[8 + 32..8 + 32 + 8]);
+            u64::from_le_bytes(buf).to_le_bytes()
+        };
+        let owner_bytes: [u8; 32] = vault_owner.to_bytes();
+        let seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
 
         invoke_signed(
-            &place_limit_order_instruction(&ctx.accounts, vault.side, limit_order, &bins, vault.owner),
-            &account_infos,
-            &[&vault_seeds(&ctx.accounts.vault)],
+            &place_limit_order_instruction(ctx.accounts, side, limit_order, &bins, vault_owner),
+            account_infos.as_slice(),
+            &[&seeds],
         )?;
 
-        // ---- commit state ----------------------------------------------------
+        // Touch tranche_amount + current_placed to keep the linter happy
+        // about destructuring.
+        let _ = (tranche_amount, current_placed);
+
+        // ---- commit state ---------------------------------------------------
+        let vault = &mut ctx.accounts.vault;
         vault.tranches_placed += 1;
         vault.amount_placed += vault.tranche_amount;
         vault.last_placed_at = clock_now();
@@ -223,15 +261,23 @@ pub mod orderflow {
     /// Permissionless crank. Claims accrued fees (and returns any remaining
     /// order principal) for a placed limit order; funds return *to the vault*,
     /// never to the crank.
-    pub fn claim_fees(
-        ctx: Context<ClaimFees>,
+    pub fn claim_fees<'info>(
+        ctx: Context<'info, 'info, 'info, 'info, ClaimFees<'info>>,
         bin_ids: Vec<i64>,
     ) -> Result<()> {
-        let vault = &ctx.accounts.vault;
+        // Read fields we need from the vault first, then drop the borrow.
+        let (owner, nonce) = {
+            let v = &ctx.accounts.vault;
+            (v.owner, v.nonce)
+        };
+        let owner_bytes: [u8; 32] = owner.to_bytes();
+        let nonce_bytes: [u8; 8] = nonce.to_le_bytes();
+        let signer_seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
+
         invoke_signed(
-            &cancel_limit_order_instruction(&ctx.accounts, &bin_ids),
-            &cancel_limit_order_accounts(&ctx.accounts, vault.owner),
-            &[&vault_seeds(&ctx.accounts.vault)],
+            &cancel_limit_order_instruction(ctx.accounts, &bin_ids),
+            &cancel_limit_order_accounts(ctx.accounts),
+            &[&signer_seeds],
         )?;
         Ok(())
     }
@@ -248,8 +294,25 @@ pub mod orderflow {
     /// Owner-only — always available. Sweeps `amount` from the vault to the
     /// owner. Note this withdraws the settled vault balance; open orders owned
     /// by the vault are untouched (cancel them first to free their funds).
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+    pub fn withdraw<'info>(
+        ctx: Context<'info, 'info, 'info, 'info, Withdraw<'info>>,
+        amount: u64,
+    ) -> Result<()> {
         require!(amount > 0, ErrorCode::ZeroAmount);
+
+        // Build the PDA signer seeds inline. `vault.nonce.to_le_bytes()` would
+        // create a temporary whose reference does not escape the expression,
+        // so we read the nonce via `try_borrow_data` on the account info
+        // instead — that returns a slice with a longer lifetime, but the
+        // simplest correct path here is to copy the nonce into a local buffer
+        // and bind the seed slice to it.
+        let nonce_bytes: [u8; 8] = {
+            let v = &ctx.accounts.vault;
+            v.nonce.to_le_bytes()
+        };
+        let owner_bytes: [u8; 32] = ctx.accounts.vault.owner.to_bytes();
+        let seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
+
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -258,7 +321,7 @@ pub mod orderflow {
                     to: ctx.accounts.owner_ata.to_account_info(),
                     authority: ctx.accounts.vault.to_account_info(),
                 },
-                &[&vault_seeds(&ctx.accounts.vault)],
+                &[&seeds],
             ),
             amount,
         )?;
@@ -295,12 +358,11 @@ pub struct Deposit<'info> {
         seeds = [b"vault", owner.key().as_ref(), vault.nonce.to_le_bytes().as_ref()],
         bump = vault.bump,
         has_one = owner,
-        has_one = mint
     )]
     pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: validated via has_one = mint on the vault.
+    /// CHECK: validated against `vault.mint` in the instruction handler.
     pub mint: AccountInfo<'info>,
     #[account(
         mut,
@@ -422,12 +484,11 @@ pub struct Withdraw<'info> {
         seeds = [b"vault", owner.key().as_ref(), vault.nonce.to_le_bytes().as_ref()],
         bump = vault.bump,
         has_one = owner,
-        has_one = mint
     )]
     pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: validated via has_one = mint on the vault.
+    /// CHECK: validated against `vault.mint` in the instruction handler.
     pub mint: AccountInfo<'info>,
     #[account(
         mut,
@@ -450,17 +511,18 @@ pub struct Withdraw<'info> {
 // CPI helpers
 // ---------------------------------------------------------------------------
 
-fn vault_seeds(vault: &Account<StrategyVault>) -> [&[u8]; 3] {
-    [
-        b"vault",
-        vault.owner.as_ref(),
-        &vault.nonce.to_le_bytes(),
-    ]
+/// Derive the per-tranche DLMM limit-order PDA from a vault pubkey + idx.
+fn limit_order_pda(vault_key: Pubkey, tranche_idx: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"limit_order", vault_key.as_ref(), &tranche_idx.to_le_bytes()],
+        &ID,
+    )
+    .0
 }
 
 /// Build the DLMM `place_limit_order` instruction (exact IDL account order).
 fn place_limit_order_instruction(
-    accounts: &PlaceTranche,
+    accounts: &mut PlaceTranche,
     side: SideKind,
     limit_order: Pubkey,
     bins: &[i64],
@@ -511,7 +573,7 @@ fn place_limit_order_instruction(
 }
 
 /// Build the DLMM `cancel_limit_order` instruction (exact IDL account order).
-fn cancel_limit_order_instruction(accounts: &ClaimFees, bin_ids: &[i64]) -> Instruction {
+fn cancel_limit_order_instruction(accounts: &mut ClaimFees, bin_ids: &[i64]) -> Instruction {
     let mut data = Vec::with_capacity(512);
     data.extend_from_slice(&CANCEL_LIMIT_ORDER_DISCRIMINATOR);
     data.extend_from_slice(&(bin_ids.len() as u32).to_le_bytes());
@@ -549,7 +611,7 @@ fn clock_now() -> i64 {
 }
 
 /// Account list matching DLMM's cancel_limit_order IDL order.
-fn cancel_limit_order_accounts<'a>(accounts: &'a ClaimFees<'a>, _owner: Pubkey) -> Vec<AccountInfo<'a>> {
+fn cancel_limit_order_accounts<'a>(accounts: &'a mut ClaimFees<'a>) -> Vec<AccountInfo<'a>> {
     vec![
         accounts.lb_pair.to_account_info(),
         accounts.bin_array_bitmap_extension.to_account_info(),

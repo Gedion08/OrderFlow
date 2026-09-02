@@ -51,7 +51,7 @@ paid while you wait. OrderFlow wraps that engine behind a "set it and forget it"
 | Path | What it is |
 |---|---|
 | `packages/core` | Shared types, constants, config, DLMM bin math (dependency-free) |
-| `packages/sdk` | `VaultSdk` — builds OrderFlow vault instructions + DLMM CPI; `OrderFlowSdk` (legacy direct-DLMM) |
+| `packages/sdk` | `VaultSdk` — builds OrderFlow vault instructions + DLMM CPI; PDA/ATA derivation; on-chain vault deserialization |
 | `packages/api` | Express read layer proxying Meteora's Data API |
 | `packages/keeper` | Crank loop: triggers pre-authorized vault instructions |
 | `packages/anchor` | Solana program owning per-strategy vault PDAs (non-custodial) |

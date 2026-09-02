@@ -32,7 +32,7 @@ import {
   DcaOrder,
   spreadBinsBetweenBrackets,
 } from '@orderflow/core';
-import { VaultSdk, vaultPda } from '@orderflow/sdk';
+import { VaultSdk, vaultPda, limitOrderPda } from '@orderflow/sdk';
 import { JsonStrategyStore, PostgresStrategyStore } from '@orderflow/store';
 import DLMM from '@meteora-ag/dlmm';
 
@@ -44,7 +44,6 @@ function makeCrankKeypair(): Keypair {
 
 interface LbPairInfo {
   lbPair: PublicKey;
-  reserve: PublicKey;      // reserve for the token being sold by the vault
   reserveX: PublicKey;
   reserveY: PublicKey;
   tokenXMint: PublicKey;
@@ -131,15 +130,20 @@ export class Keeper {
     if (cached) return cached;
     const dlmm = await DLMM.create(this.sdk.connection, new PublicKey(poolAddress));
     const lbPair = new PublicKey(poolAddress);
+    const reserveX = new PublicKey((dlmm as any).lbPair?.reserveX ?? (dlmm as any).reserveX);
+    const reserveY = new PublicKey((dlmm as any).lbPair?.reserveY ?? (dlmm as any).reserveY);
+    const tokenXMint = new PublicKey((dlmm as any).tokenX?.mint?.address ?? (dlmm as any).tokenXMint);
+    const tokenYMint = new PublicKey((dlmm as any).tokenY?.mint?.address ?? (dlmm as any).tokenYMint);
+    const binStep = Number((dlmm as any).binStep ?? (dlmm as any).state?.binStep ?? 100);
+    const activeId = Number((await dlmm.getActiveBin())?.binId ?? 0);
     const info: LbPairInfo = {
       lbPair,
-      reserveX: new PublicKey((dlmm as any).lbPair?.reserveX ?? (dlmm as any).reserveX ?? '11111111111111111111111111111111'),
-      reserveY: new PublicKey((dlmm as any).lbPair?.reserveY ?? (dlmm as any).reserveY ?? '11111111111111111111111111111111'),
-      tokenXMint: new PublicKey((dlmm as any).tokenX?.mint?.address ?? '11111111111111111111111111111111'),
-      tokenYMint: new PublicKey((dlmm as any).tokenY?.mint?.address ?? '11111111111111111111111111111111'),
-      reserve: (dlmm as any).tokenX?.mint?.address ? new PublicKey((dlmm as any).reserveX ?? '11111111111111111111111111111111') : new PublicKey('11111111111111111111111111111111'),
-      binStep: Number((dlmm as any).binStep ?? (dlmm as any).state?.binStep ?? 100),
-      activeId: Number((await dlmm.getActiveBin())?.binId ?? 0),
+      reserveX,
+      reserveY,
+      tokenXMint,
+      tokenYMint,
+      binStep,
+      activeId,
     };
     this.pairCache.set(poolAddress, info);
     return info;
@@ -171,6 +175,11 @@ export class Keeper {
    * Advance a strategy: claim fees on open orders, then place tranches that are
    * due. Because the vault enforces cadence/bracket/cap on-chain, we simply
    * submit the crank txs and let the invariant checks happen in the program.
+   *
+   * The **on-chain** `vault.tranchesPlaced` is the source of truth for which
+   * tranche to place next (it determines the limit-order PDA index). We do
+   * not trust local `s.orders.length` — it may be stale if a previous crank
+   * instance ran and was then restarted.
    */
   private async advance(s: DcaStrategy) {
     const owner = new PublicKey(s.owner);
@@ -180,29 +189,52 @@ export class Keeper {
       return;
     }
     const vault = new PublicKey(s.vaultAddress);
+
+    const onChain = await this.sdk.fetchVault(vault);
+    if (!onChain) {
+      console.warn(`[keeper] ${s.strategyId} vault ${vault.toBase58()} not found on chain; skipping`);
+      return;
+    }
+    if (onChain.status === 3 /* Cancelled */) {
+      s.status = 'cancelled';
+      await this.store.upsert(s);
+      return;
+    }
+    if (onChain.tranchesPlaced >= onChain.tranches) {
+      s.status = 'completed';
+      await this.store.upsert(s);
+      return;
+    }
+
     const info = await this.lbPairInfo(s.pool);
 
-    // 1. claim fees on already-placed orders (funds return to vault)
-    for (const o of s.orders) {
-      if (o.status === 'placed' || o.status === 'partially_filled') {
+    // 1. claim fees on already-placed orders (funds return to vault).
+    //    We only attempt this for orders that match the on-chain pending limit
+    //    order; older rows from a previous keeper are kept but never claimed
+    //    again because the on-chain cancel would also settle the original.
+    if (onChain.pending) {
+      const known = s.orders.find(
+        (o) => o.address === onChain.pending!.address.toBase58(),
+      );
+      if (known && (known.status === 'placed' || known.status === 'partially_filled')) {
         try {
-          await this.claimFees(s, vault, nonce, info, o);
+          await this.claimFees(s, vault, nonce, info, known, onChain.pending.binIds);
         } catch (e) {
           console.error(`[keeper] ${s.strategyId} claim fees failed:`, (e as Error).message);
         }
       }
     }
 
-    // 2. place tranches that are due
-    const now = Date.now();
-    let dueCount = 0;
-    if (s.tranches > 0) {
-      const elapsed = now - s.createdAt;
-      const perTrancheMs = s.intervalSeconds * 1000;
-      if (perTrancheMs > 0) dueCount = Math.min(s.tranches, Math.floor(elapsed / perTrancheMs) + 1);
+    // 2. place the next tranche only if cadence has elapsed since the
+    //    on-chain `last_placed_at`. The on-chain program re-checks this too.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const cadenceOk =
+      s.intervalSeconds <= 0 ||
+      nowSec >= Number(onChain.lastPlacedAt) + s.intervalSeconds;
+    if (!cadenceOk) {
+      await this.store.upsert(s);
+      return;
     }
-    if (s.intervalSeconds <= 0) dueCount = s.tranches;
-    dueCount = Math.max(1, dueCount);
 
     const lower = s.minPrice ?? 0;
     const upper = s.maxPrice ?? (lower || 1);
@@ -210,31 +242,28 @@ export class Keeper {
     const targetBins = spreadBinsBetweenBrackets(lower, upper, 1, binStep);
     const binId = targetBins[0];
 
-    while (s.orders.length < Math.min(s.tranches, dueCount)) {
-      const idx = s.orders.length;
-      await this.placeTranche(s, vault, nonce, info, idx, [binId]);
-      const order: DcaOrder = {
-        orderId: `${s.strategyId}-${idx}`,
-        address: vault.toBase58(),
-        binIds: [binId],
-        binIdsResolved: [binId],
-        priceLow: lower,
-        priceHigh: upper,
-        amount: s.totalAmount / s.tranches,
-        side: s.side,
-        filled: 0,
-        feesEarned: 0,
-        filledAmount: 0,
-        status: 'placed',
-        createdAt: now,
-        lastClaimedAt: null,
-      };
-      s.orders.push(order);
-      console.log(`[keeper] ${s.strategyId} crank placed tranche ${idx + 1}/${s.tranches} @ bin ${binId}`);
-    }
+    const idx = onChain.tranchesPlaced;
+    await this.placeTranche(s, vault, nonce, info, idx, [binId]);
+    const order: DcaOrder = {
+      orderId: `${s.strategyId}-${idx}`,
+      address: limitOrderPda(vault, idx).toBase58(),
+      binIds: [binId],
+      binIdsResolved: [binId],
+      priceLow: lower,
+      priceHigh: upper,
+      amount: s.totalAmount / s.tranches,
+      side: s.side,
+      filled: 0,
+      feesEarned: 0,
+      filledAmount: 0,
+      status: 'placed',
+      createdAt: Date.now(),
+      lastClaimedAt: null,
+    };
+    s.orders.push(order);
+    console.log(`[keeper] ${s.strategyId} crank placed tranche ${idx + 1}/${s.tranches} @ bin ${binId}`);
 
-    const allPlaced = s.orders.length >= s.tranches;
-    if (allPlaced) s.status = 'active';
+    s.status = 'active';
     await this.store.upsert(s);
   }
 
@@ -264,10 +293,11 @@ export class Keeper {
 
   private async claimFees(
     s: DcaStrategy,
-    vault: PublicKey,
+    _vault: PublicKey,
     nonce: bigint,
     info: LbPairInfo,
     order: DcaOrder,
+    binIds: number[],
   ) {
     const limitOrder = new PublicKey(order.address);
     const tx = await this.sdk.buildClaimFeesTx({
@@ -275,7 +305,7 @@ export class Keeper {
       owner: new PublicKey(s.owner),
       vaultNonce: nonce,
       limitOrder,
-      binIds: order.binIds,
+      binIds,
       lbPair: info.lbPair,
       reserveX: info.reserveX,
       reserveY: info.reserveY,

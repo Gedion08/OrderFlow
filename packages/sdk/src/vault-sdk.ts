@@ -32,7 +32,7 @@ import {
 import crypto from 'crypto';
 import { OrderFlowConfig, loadConfig } from '@orderflow/core';
 
-const ORDERFLOW_PROGRAM = new PublicKey('AnChOrFlow11111111111111111111111111111111');
+const ORDERFLOW_PROGRAM = new PublicKey('AnchorFLow111111111111111111111111111111111');
 const DLMM_PROGRAM    = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const MEMO_PROGRAM    = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
@@ -107,6 +107,36 @@ export function resolveBitmapExtension(lbPair: PublicKey, binIds: number[]): Pub
 }
 
 // ─── Instruction builders ─────────────────────────────────────────────────────
+
+/** On-chain status enum (must match lib.rs `VaultStatus`). */
+export type OnChainVaultStatus = 0 | 1 | 2 | 3; // Depositing | Active | Completed | Cancelled
+
+/** An open limit order currently owned by the vault (latest tranche). */
+export interface PendingLimitOrder {
+  address: PublicKey;
+  binIds: number[];
+}
+
+/** Mirror of `StrategyVault` deserialized from chain. */
+export interface OnChainVault {
+  owner: PublicKey;
+  nonce: bigint;
+  pool: PublicKey;
+  mint: PublicKey;
+  side: 'bid' | 'ask';
+  tranches: number;
+  tranchesPlaced: number;
+  intervalSeconds: bigint;
+  minBinId: bigint;
+  maxBinId: bigint;
+  trancheAmount: bigint;
+  totalCap: bigint;
+  amountPlaced: bigint;
+  lastPlacedAt: bigint;
+  pending: PendingLimitOrder | null;
+  status: OnChainVaultStatus;
+  bump: number;
+}
 
 /** Accounts layout (manual, no IDL dependency). */
 export interface CreateVaultAccounts {
@@ -385,6 +415,59 @@ export class VaultSdk {
       vault,
       vaultAta: getAssociatedTokenAddressSync(mint, vault, true),
       mint,
+    };
+  }
+
+  /**
+   * Fetch + deserialize an on-chain `StrategyVault` account.
+   *
+   * Returns null if the account does not exist. This is the **source of truth**
+   * for keeper decisions — `tranches_placed` in particular, which determines
+   * the next limit-order PDA index. Do not derive the tranche index from local
+   * state; doing so races with other cranks.
+   */
+  async fetchVault(vault: PublicKey): Promise<OnChainVault | null> {
+    const info = await this.connection.getAccountInfo(vault, 'confirmed');
+    if (!info) return null;
+    const data = info.data;
+    if (data.length < 8 + 32 + 8 + 32 + 32 + 1 + 2 + 2 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 1) {
+      throw new Error(`vault account too small: ${data.length} bytes`);
+    }
+    let o = 8; // skip discriminator
+    const owner = new PublicKey(data.subarray(o, o + 32)); o += 32;
+    const nonce = data.readBigUInt64LE(o); o += 8;
+    const pool = new PublicKey(data.subarray(o, o + 32)); o += 32;
+    const mint = new PublicKey(data.subarray(o, o + 32)); o += 32;
+    const side: 'bid' | 'ask' = data[o] === 1 ? 'ask' : 'bid'; o += 1;
+    const tranches = data.readUInt16LE(o); o += 2;
+    const tranchesPlaced = data.readUInt16LE(o); o += 2;
+    const intervalSeconds = data.readBigUInt64LE(o); o += 8;
+    const minBinId = data.readBigInt64LE(o); o += 8;
+    const maxBinId = data.readBigInt64LE(o); o += 8;
+    const trancheAmount = data.readBigUInt64LE(o); o += 8;
+    const totalCap = data.readBigUInt64LE(o); o += 8;
+    const amountPlaced = data.readBigUInt64LE(o); o += 8;
+    const lastPlacedAt = data.readBigInt64LE(o); o += 8;
+    const hasPending = data[o]; o += 1;
+    let pending: PendingLimitOrder | null = null;
+    if (hasPending === 1) {
+      const address = new PublicKey(data.subarray(o, o + 32)); o += 32;
+      const vecLen = data.readUInt32LE(o); o += 4;
+      const binIds: number[] = [];
+      for (let i = 0; i < vecLen; i++) {
+        binIds.push(Number(data.readBigInt64LE(o)));
+        o += 8;
+      }
+      pending = { address, binIds };
+    }
+    const status = data[o] as 0 | 1 | 2 | 3; o += 1;
+    const bump = data[o];
+    return {
+      owner, nonce, pool, mint, side,
+      tranches, tranchesPlaced,
+      intervalSeconds, minBinId, maxBinId,
+      trancheAmount, totalCap, amountPlaced, lastPlacedAt,
+      pending, status, bump,
     };
   }
 
