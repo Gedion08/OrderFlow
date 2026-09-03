@@ -130,7 +130,7 @@ pub mod orderflow {
     /// `bin_ids`. `bin_ids` is normalized to a fixed-length 50-vector padded
     /// with `i64::MIN` sentinels so the on-chain instruction data is a stable
     /// size regardless of how many bins a crank passes.
-    pub fn place_tranche<'info>(ctx: Context<'info, 'info, 'info, 'info, PlaceTranche<'info>>, bin_ids: [i64; 50]) -> Result<()> {
+    pub fn place_tranche<'info, 'a>(ctx: Context<'a, 'a, 'a, 'info, PlaceTranche<'info>>, bin_ids: [i64; 50]) -> Result<()> where 'info: 'a {
         // ---- ownership / state guards (read-only borrow) --------------------
         let (
             side,
@@ -155,7 +155,7 @@ pub mod orderflow {
                 ErrorCode::MintMismatch
             );
             // content guards — need vault fields
-            let mut bins: Vec<i64> = bin_ids.iter().copied()
+            let bins: Vec<i64> = bin_ids.iter().copied()
                 .take_while(|b| *b != i64::MIN)
                 .collect();
             require!(!bins.is_empty(), ErrorCode::NoBins);
@@ -237,7 +237,7 @@ pub mod orderflow {
         let seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
 
         invoke_signed(
-            &place_limit_order_instruction(ctx.accounts, side, limit_order, &bins, vault_owner),
+            &place_limit_order_instruction(&*ctx.accounts, side, limit_order, &bins, vault_key),
             account_infos.as_slice(),
             &[&seeds],
         )?;
@@ -261,10 +261,10 @@ pub mod orderflow {
     /// Permissionless crank. Claims accrued fees (and returns any remaining
     /// order principal) for a placed limit order; funds return *to the vault*,
     /// never to the crank.
-    pub fn claim_fees<'info>(
-        ctx: Context<'info, 'info, 'info, 'info, ClaimFees<'info>>,
+    pub fn claim_fees<'info, 'a>(
+        ctx: Context<'a, 'a, 'a, 'info, ClaimFees<'info>>,
         bin_ids: Vec<i64>,
-    ) -> Result<()> {
+    ) -> Result<()> where 'info: 'a {
         // Read fields we need from the vault first, then drop the borrow.
         let (owner, nonce) = {
             let v = &ctx.accounts.vault;
@@ -275,8 +275,8 @@ pub mod orderflow {
         let signer_seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
 
         invoke_signed(
-            &cancel_limit_order_instruction(ctx.accounts, &bin_ids),
-            &cancel_limit_order_accounts(ctx.accounts),
+            &cancel_limit_order_instruction(&*ctx.accounts, &bin_ids),
+            &cancel_limit_order_accounts(&*ctx.accounts),
             &[&signer_seeds],
         )?;
         Ok(())
@@ -294,10 +294,10 @@ pub mod orderflow {
     /// Owner-only — always available. Sweeps `amount` from the vault to the
     /// owner. Note this withdraws the settled vault balance; open orders owned
     /// by the vault are untouched (cancel them first to free their funds).
-    pub fn withdraw<'info>(
-        ctx: Context<'info, 'info, 'info, 'info, Withdraw<'info>>,
+    pub fn withdraw<'info, 'a>(
+        ctx: Context<'a, 'a, 'a, 'info, Withdraw<'info>>,
         amount: u64,
-    ) -> Result<()> {
+    ) -> Result<()> where 'info: 'a {
         require!(amount > 0, ErrorCode::ZeroAmount);
 
         // Build the PDA signer seeds inline. `vault.nonce.to_le_bytes()` would
@@ -522,7 +522,7 @@ fn limit_order_pda(vault_key: Pubkey, tranche_idx: u16) -> Pubkey {
 
 /// Build the DLMM `place_limit_order` instruction (exact IDL account order).
 fn place_limit_order_instruction(
-    accounts: &mut PlaceTranche,
+    accounts: &PlaceTranche,
     side: SideKind,
     limit_order: Pubkey,
     bins: &[i64],
@@ -558,11 +558,15 @@ fn place_limit_order_instruction(
             AccountMeta::new(limit_order, true),
             // payer = crank (pays rent), signer
             AccountMeta::new(accounts.crank.key(), true),
+            // owner = the vault PDA (DLMM validates this is the owner of the
+            // created limit_order account). The sender (token-transfer authority
+            // of the vault ATA) is also the vault PDA, signing here via the
+            // invoke_signed seeds above — never the crank.
             AccountMeta::new_readonly(owner, false),
             // userToken = the vault ATA that funds the order
             AccountMeta::new(accounts.vault_ata.key(), false),
-            // sender = crank signer
-            AccountMeta::new_readonly(accounts.crank.key(), true),
+            // sender = vault PDA (authority over vault ATA), signer via invoke_signed
+            AccountMeta::new_readonly(owner, true),
             AccountMeta::new_readonly(TOKEN_PROGRAM, false),
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(dlmm_event_authority(), false),
@@ -573,7 +577,7 @@ fn place_limit_order_instruction(
 }
 
 /// Build the DLMM `cancel_limit_order` instruction (exact IDL account order).
-fn cancel_limit_order_instruction(accounts: &mut ClaimFees, bin_ids: &[i64]) -> Instruction {
+fn cancel_limit_order_instruction(accounts: &ClaimFees, bin_ids: &[i64]) -> Instruction {
     let mut data = Vec::with_capacity(512);
     data.extend_from_slice(&CANCEL_LIMIT_ORDER_DISCRIMINATOR);
     data.extend_from_slice(&(bin_ids.len() as u32).to_le_bytes());
@@ -611,7 +615,7 @@ fn clock_now() -> i64 {
 }
 
 /// Account list matching DLMM's cancel_limit_order IDL order.
-fn cancel_limit_order_accounts<'a>(accounts: &'a mut ClaimFees<'a>) -> Vec<AccountInfo<'a>> {
+fn cancel_limit_order_accounts<'b, 'info>(accounts: &'b ClaimFees<'info>) -> Vec<AccountInfo<'info>> {
     vec![
         accounts.lb_pair.to_account_info(),
         accounts.bin_array_bitmap_extension.to_account_info(),
