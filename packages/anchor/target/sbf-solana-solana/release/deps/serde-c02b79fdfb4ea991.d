@@ -1,0 +1,14 @@
+/home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/deps/libserde-c02b79fdfb4ea991.rmeta: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/build/serde-c1c8a59be3141b2d/out/private.rs
+
+/home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/deps/libserde-c02b79fdfb4ea991.rlib: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/build/serde-c1c8a59be3141b2d/out/private.rs
+
+/home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/deps/serde-c02b79fdfb4ea991.d: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/build/serde-c1c8a59be3141b2d/out/private.rs
+
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs:
+/home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/build/serde-c1c8a59be3141b2d/out/private.rs:
+
+# env-dep:OUT_DIR=/home/gideon/OrderFlow/packages/anchor/target/sbf-solana-solana/release/build/serde-c1c8a59be3141b2d/out

@@ -34,7 +34,7 @@ use anchor_spl::{
     token::{self, Token, TokenAccount, Transfer},
 };
 
-declare_id!("AnchorFLow111111111111111111111111111111111");
+declare_id!("7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR");
 
 /// Meteora DLMM (lb_clmm) program id.
 pub const DLMM_PROGRAM: Pubkey = solana_program::pubkey!("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
@@ -402,19 +402,28 @@ pub struct PlaceTranche<'info> {
         seeds = [b"limit_order", vault.key().as_ref(), vault.tranches_placed.to_le_bytes().as_ref()],
         bump
     )]
+    /// CHECK: per-tranche DLMM limit-order PDA, derived in the handler and
+    /// validated against the DLMM IDL account order it is passed through to.
     pub limit_order: AccountInfo<'info>,
     /// The crank wallet — pays gas/rent. Never controls funds.
     #[account(mut)]
     pub crank: Signer<'info>,
     // ---- DLMM CPI accounts (fixed set) -------------------------------------
+    /// CHECK: DLMM program id — passthrough, validated by DLMM.
     #[account(mut)]
     pub dlmm_program: AccountInfo<'info>,
+    /// CHECK: LB pair account — passthrough, validated by DLMM.
     #[account(mut)]
     pub lb_pair: AccountInfo<'info>,
+    /// CHECK: bin array bitmap extension — passthrough, validated by DLMM.
     #[account(mut)]
     pub bin_array_bitmap_extension: AccountInfo<'info>,
+    /// CHECK: DLMM pool reserve (X or Y depending on side) — passthrough,
+    /// validated by DLMM.
     #[account(mut)]
     pub reserve: AccountInfo<'info>,
+    /// CHECK: token mint of the bin side being traded — passthrough,
+    /// validated by DLMM.
     #[account(mut)]
     pub token_mint: AccountInfo<'info>,
     /// CHECK: derived `__event_authority` PDA of the DLMM program.
@@ -439,22 +448,33 @@ pub struct ClaimFees<'info> {
     pub vault_ata: Account<'info, TokenAccount>,
     #[account(mut)]
     pub crank: Signer<'info>,
+    /// CHECK: DLMM program id — passthrough, validated by DLMM.
     #[account(mut)]
     pub dlmm_program: AccountInfo<'info>,
+    /// CHECK: LB pair account — passthrough, validated by DLMM.
     #[account(mut)]
     pub lb_pair: AccountInfo<'info>,
+    /// CHECK: bin array bitmap extension — passthrough, validated by DLMM.
     #[account(mut)]
     pub bin_array_bitmap_extension: AccountInfo<'info>,
+    /// CHECK: X-side reserve of the DLMM pool — passthrough, validated by DLMM.
     #[account(mut)]
     pub reserve_x: AccountInfo<'info>,
+    /// CHECK: Y-side reserve of the DLMM pool — passthrough, validated by DLMM.
     #[account(mut)]
     pub reserve_y: AccountInfo<'info>,
+    /// CHECK: token X mint of the pool — passthrough, validated by DLMM.
     pub token_x_mint: AccountInfo<'info>,
+    /// CHECK: token Y mint of the pool — passthrough, validated by DLMM.
     pub token_y_mint: AccountInfo<'info>,
+    /// CHECK: per-tranche limit-order PDA owned by the vault — validated in
+    /// handler against the stored `pending_limit_order` address.
     #[account(mut)]
     pub limit_order: AccountInfo<'info>,
+    /// CHECK: owner token X ATA — passthrough, validated by DLMM.
     #[account(mut)]
     pub owner_token_x: AccountInfo<'info>,
+    /// CHECK: owner token Y ATA — passthrough, validated by DLMM.
     #[account(mut)]
     pub owner_token_y: AccountInfo<'info>,
     /// CHECK: derived `__event_authority` PDA of the DLMM program.

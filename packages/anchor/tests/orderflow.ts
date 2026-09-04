@@ -6,7 +6,7 @@ import { Orderflow } from "../target/types/orderflow";
 const { SystemProgram } = anchor.web3;
 
 // OrderFlow program id (must match lib.rs declare_id!)
-const PROGRAM_ID = new anchor.web3.PublicKey("AnchorFLow111111111111111111111111111111111");
+const PROGRAM_ID = new anchor.web3.PublicKey("7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR");
 
 describe("orderflow", () => {
   const provider = anchor.AnchorProvider.env();

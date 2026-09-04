@@ -1,0 +1,14 @@
+/home/gideon/OrderFlow/packages/anchor/target/release/deps/libserde-697cd868446bb06b.rmeta: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/release/build/serde-78ae0936e3e537d4/out/private.rs
+
+/home/gideon/OrderFlow/packages/anchor/target/release/deps/libserde-697cd868446bb06b.rlib: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/release/build/serde-78ae0936e3e537d4/out/private.rs
+
+/home/gideon/OrderFlow/packages/anchor/target/release/deps/serde-697cd868446bb06b.d: /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs /home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs /home/gideon/OrderFlow/packages/anchor/target/release/build/serde-78ae0936e3e537d4/out/private.rs
+
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/lib.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/integer128.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/mod.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/de.rs:
+/home/gideon/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.229/src/private/ser.rs:
+/home/gideon/OrderFlow/packages/anchor/target/release/build/serde-78ae0936e3e537d4/out/private.rs:
+
+# env-dep:OUT_DIR=/home/gideon/OrderFlow/packages/anchor/target/release/build/serde-78ae0936e3e537d4/out

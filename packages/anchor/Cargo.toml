@@ -1,0 +1,3 @@
+[workspace]
+members = ["programs/orderflow"]
+resolver = "2"

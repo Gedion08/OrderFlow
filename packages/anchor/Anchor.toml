@@ -1,12 +1,12 @@
 [workspace]
-members = ["programs/*"]
+members = ["programs/orderflow"]
 
 [provider]
 cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [programs.localnet]
-orderflow = "AnchorFLow111111111111111111111111111111111"
+orderflow = "7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR"
 
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

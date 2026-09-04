@@ -3,6 +3,7 @@ name = "orderflow"
 version = "0.1.0"
 description = "OrderFlow — DCA strategy coordinator on Meteora"
 edition = "2021"
+rust-version = "1.75"
 
 [lib]
 name = "orderflow"
@@ -12,3 +13,6 @@ crate-type = ["cdylib", "lib"]
 anchor-lang = { version = "0.29.0", features = ["init-if-needed"] }
 anchor-spl = "0.29.0"
 solana-program = "1.18.0"
+
+[profile.release]
+opt-level = 3

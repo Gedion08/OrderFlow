@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "types": ["mocha"],
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "es2019",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "lib": ["es2019"],
+    "skipLibCheck": true
+  },
+  "include": ["tests/**/*.ts"]
+}
