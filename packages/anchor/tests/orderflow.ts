@@ -7,12 +7,18 @@ import idl from "../target/idl/orderflow.json";
 const { SystemProgram } = anchor.web3;
 
 // OrderFlow program id (must match lib.rs declare_id!)
-const PROGRAM_ID = new anchor.web3.PublicKey("7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR");
+const PROGRAM_ID = new anchor.web3.PublicKey(
+  "7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR",
+);
 
 describe("orderflow", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  const program = new Program(idl as any, PROGRAM_ID, provider) as Program<Orderflow>;
+  const program = new Program(
+    idl as any,
+    PROGRAM_ID,
+    provider,
+  ) as Program<Orderflow>;
 
   const owner = provider.wallet.publicKey;
   const nonce = new anchor.BN(Date.now() % 0xffffffff);
@@ -21,8 +27,12 @@ describe("orderflow", () => {
 
   function vaultPda(ownerKey: anchor.web3.PublicKey, n: anchor.BN) {
     return anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), ownerKey.toBuffer(), n.toArrayLike(Buffer, "le", 8)],
-      PROGRAM_ID
+      [
+        Buffer.from("vault"),
+        ownerKey.toBuffer(),
+        n.toArrayLike(Buffer, "le", 8),
+      ],
+      PROGRAM_ID,
     );
   }
 
@@ -34,12 +44,12 @@ describe("orderflow", () => {
         pool,
         mint,
         { bid: {} },
-        10,               // tranches
+        10, // tranches
         new anchor.BN(3600), // interval_seconds
-        new anchor.BN(100),  // min_bin_id
-        new anchor.BN(150),  // max_bin_id
+        new anchor.BN(100), // min_bin_id
+        new anchor.BN(150), // max_bin_id
         new anchor.BN(1_000_000), // tranche_amount
-        new anchor.BN(10_000_000) // total_cap
+        new anchor.BN(10_000_000), // total_cap
       )
       .accounts({
         vault,
