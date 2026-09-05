@@ -37,7 +37,7 @@ describe("orderflow", () => {
         10,               // tranches
         new anchor.BN(3600), // interval_seconds
         new anchor.BN(100),  // min_bin_id
-        new anchor.BN(200),  // max_bin_id
+        new anchor.BN(150),  // max_bin_id
         new anchor.BN(1_000_000), // tranche_amount
         new anchor.BN(10_000_000) // total_cap
       )
@@ -53,7 +53,7 @@ describe("orderflow", () => {
     expect(v.tranches).to.equal(10);
     expect(v.trancheAmount.toString()).to.equal("1000000");
     expect(v.totalCap.toString()).to.equal("10000000");
-    expect(v.status.depositing).to.equal(true);
+    expect(v.status).to.have.property("depositing");
     expect(tx).to.be.a("string");
   });
 });

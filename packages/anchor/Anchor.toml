@@ -9,4 +9,4 @@ wallet = "~/.config/solana/id.json"
 orderflow = "7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR"
 
 [scripts]
-test = "node ./run-tests.cjs"
+test = "./run-tests.cjs"

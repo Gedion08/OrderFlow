@@ -13,7 +13,7 @@
     "@solana/web3.js": "^1.91.8",
     "@types/mocha": "^10.0.10",
     "mocha": "^10.7.3",
-    "rpc-websockets": "^7.11.2",
+    "rpc-websockets": "^7.5.1",
     "ts-mocha": "^10.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
