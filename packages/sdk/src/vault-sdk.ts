@@ -23,31 +23,63 @@ import {
   Transaction,
   TransactionInstruction,
   SystemProgram,
-} from '@solana/web3.js';
+} from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
-} from '@solana/spl-token';
-import crypto from 'crypto';
-import { OrderFlowConfig, loadConfig } from '@orderflow/core';
+} from "@solana/spl-token";
+import crypto from "crypto";
+import { OrderFlowConfig, loadConfig } from "@orderflow/core";
 
-const ORDERFLOW_PROGRAM = new PublicKey('AnchorFLow111111111111111111111111111111111');
-const DLMM_PROGRAM    = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-const MEMO_PROGRAM    = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const ORDERFLOW_PROGRAM = new PublicKey(
+  "7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR",
+);
+const DLMM_PROGRAM = new PublicKey(
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+);
+const MEMO_PROGRAM = new PublicKey(
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+);
 
 // ─── Anchor discriminator helper ──────────────────────────────────────────────
 function ixDiscriminator(name: string): Buffer {
-  return crypto.createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
+  return crypto
+    .createHash("sha256")
+    .update(`global:${name}`)
+    .digest()
+    .subarray(0, 8);
 }
 
 // ─── Borsh helpers ────────────────────────────────────────────────────────────
-function leU8(v: number)        { const b = Buffer.alloc(1); b.writeUInt8(v);       return b; }
-function leU16(v: number)       { const b = Buffer.alloc(2); b.writeUInt16LE(v);    return b; }
-function leU32(v: number)       { const b = Buffer.alloc(4); b.writeUInt32LE(v);    return b; }
-function leI64(v: bigint)       { const b = Buffer.alloc(8); b.writeBigInt64LE(v);  return b; }
-function leU64(v: bigint)       { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b; }
-function lePubkey(k: PublicKey) { return k.toBuffer(); }
+function leU8(v: number) {
+  const b = Buffer.alloc(1);
+  b.writeUInt8(v);
+  return b;
+}
+function leU16(v: number) {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(v);
+  return b;
+}
+function leU32(v: number) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(v);
+  return b;
+}
+function leI64(v: bigint) {
+  const b = Buffer.alloc(8);
+  b.writeBigInt64LE(v);
+  return b;
+}
+function leU64(v: bigint) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(v);
+  return b;
+}
+function lePubkey(k: PublicKey) {
+  return k.toBuffer();
+}
 
 function vecI64(vals: number[]): Buffer {
   const buf = [leU32(vals.length)];
@@ -58,14 +90,14 @@ function vecI64(vals: number[]): Buffer {
 // ─── PDA derivation ───────────────────────────────────────────────────────────
 export function vaultPda(owner: PublicKey, nonce: bigint): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('vault'), owner.toBuffer(), leU64(nonce)],
+    [Buffer.from("vault"), owner.toBuffer(), leU64(nonce)],
     ORDERFLOW_PROGRAM,
   )[0];
 }
 
 export function limitOrderPda(vault: PublicKey, trancheIdx: number): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('limit_order'), vault.toBuffer(), leU16(trancheIdx)],
+    [Buffer.from("limit_order"), vault.toBuffer(), leU16(trancheIdx)],
     ORDERFLOW_PROGRAM,
   )[0];
 }
@@ -73,7 +105,7 @@ export function limitOrderPda(vault: PublicKey, trancheIdx: number): PublicKey {
 // DLMM bin-array PDA: seeds ["bin_array", lb_pair, index(i64)]
 function binArrayPda(lbPair: PublicKey, index: number): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('bin_array'), lbPair.toBuffer(), leI64(BigInt(index))],
+    [Buffer.from("bin_array"), lbPair.toBuffer(), leI64(BigInt(index))],
     DLMM_PROGRAM,
   )[0];
 }
@@ -84,22 +116,28 @@ function binIdToBinArrayIndex(binId: number): number {
 }
 
 /** Derive the unique bin-array account ids required for a set of bin ids. */
-export function resolveBinArrayPubkeys(lbPair: PublicKey, binIds: number[]): PublicKey[] {
+export function resolveBinArrayPubkeys(
+  lbPair: PublicKey,
+  binIds: number[],
+): PublicKey[] {
   const indexes = new Set<number>();
   for (const id of binIds) indexes.add(binIdToBinArrayIndex(id));
-  return [...indexes].map(idx => binArrayPda(lbPair, idx));
+  return [...indexes].map((idx) => binArrayPda(lbPair, idx));
 }
 
 // DLMM bin-array bitmap extension PDA
 function binArrayBitmapExtensionPda(lbPair: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('bin_array_bitmap_extension'), lbPair.toBuffer()],
+    [Buffer.from("bin_array_bitmap_extension"), lbPair.toBuffer()],
     DLMM_PROGRAM,
   )[0];
 }
 
 /** If any bin id overflows the default bitmap, return the extension PDA; else DLMM_PROGRAM_ID. */
-export function resolveBitmapExtension(lbPair: PublicKey, binIds: number[]): PublicKey {
+export function resolveBitmapExtension(
+  lbPair: PublicKey,
+  binIds: number[],
+): PublicKey {
   for (const id of binIds) {
     if (binIdToBinArrayIndex(id) > 0) return binArrayBitmapExtensionPda(lbPair);
   }
@@ -123,7 +161,7 @@ export interface OnChainVault {
   nonce: bigint;
   pool: PublicKey;
   mint: PublicKey;
-  side: 'bid' | 'ask';
+  side: "bid" | "ask";
   tranches: number;
   tranchesPlaced: number;
   intervalSeconds: bigint;
@@ -228,7 +266,7 @@ export class VaultSdk {
       nonce: bigint;
       pool: PublicKey;
       mint: PublicKey;
-      side: 'bid' | 'ask';
+      side: "bid" | "ask";
       tranches: number;
       intervalSeconds: bigint;
       minBinId: number;
@@ -238,11 +276,11 @@ export class VaultSdk {
     },
   ): TransactionInstruction {
     const data = Buffer.concat([
-      ixDiscriminator('create_vault'),
+      ixDiscriminator("create_vault"),
       leU64(args.nonce),
       lePubkey(args.pool),
       lePubkey(args.mint),
-      leU8(args.side === 'ask' ? 1 : 0),
+      leU8(args.side === "ask" ? 1 : 0),
       leU16(args.tranches),
       leU64(args.intervalSeconds),
       leI64(BigInt(args.minBinId)),
@@ -254,31 +292,32 @@ export class VaultSdk {
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
-        { pubkey: accounts.vault,            isSigner: false, isWritable: true },
-        { pubkey: accounts.owner,            isSigner: true,  isWritable: true },
-        { pubkey: accounts.systemProgram,    isSigner: false, isWritable: false },
-        { pubkey: accounts.mint,             isSigner: false, isWritable: false },
+        { pubkey: accounts.vault, isSigner: false, isWritable: true },
+        { pubkey: accounts.owner, isSigner: true, isWritable: true },
+        { pubkey: accounts.systemProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.mint, isSigner: false, isWritable: false },
       ],
       data,
     });
   }
 
   depositIx(accounts: DepositAccounts, amount: bigint): TransactionInstruction {
-    const data = Buffer.concat([
-      ixDiscriminator('deposit'),
-      leU64(amount),
-    ]);
+    const data = Buffer.concat([ixDiscriminator("deposit"), leU64(amount)]);
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
-        { pubkey: accounts.vault,                 isSigner: false, isWritable: true },
-        { pubkey: accounts.owner,                 isSigner: true,  isWritable: true },
-        { pubkey: accounts.mint,                  isSigner: false, isWritable: false },
-        { pubkey: accounts.ownerAta,              isSigner: false, isWritable: true },
-        { pubkey: accounts.vaultAta,              isSigner: false, isWritable: true },
-        { pubkey: accounts.tokenProgram,          isSigner: false, isWritable: false },
-        { pubkey: accounts.systemProgram,         isSigner: false, isWritable: false },
-        { pubkey: accounts.associatedTokenProgram,isSigner: false, isWritable: false },
+        { pubkey: accounts.vault, isSigner: false, isWritable: true },
+        { pubkey: accounts.owner, isSigner: true, isWritable: true },
+        { pubkey: accounts.mint, isSigner: false, isWritable: false },
+        { pubkey: accounts.ownerAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.vaultAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.tokenProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.systemProgram, isSigner: false, isWritable: false },
+        {
+          pubkey: accounts.associatedTokenProgram,
+          isSigner: false,
+          isWritable: false,
+        },
       ],
       data,
     });
@@ -296,17 +335,20 @@ export class VaultSdk {
     binIds: number[],
     remainingBinArrays: PublicKey[],
   ): TransactionInstruction {
-    const padded = new Array(50).fill(0).map(() => BigInt.asIntN(64, BigInt(0)));
-    const SENTINEL = BigInt.asIntN(64, BigInt('-9223372036854775808')); // i64::MIN
-    for (let i = 0; i < Math.min(binIds.length, 50); i++) padded[i] = BigInt(binIds[i]);
+    const padded = new Array(50)
+      .fill(0)
+      .map(() => BigInt.asIntN(64, BigInt(0)));
+    const SENTINEL = BigInt.asIntN(64, BigInt("-9223372036854775808")); // i64::MIN
+    for (let i = 0; i < Math.min(binIds.length, 50); i++)
+      padded[i] = BigInt(binIds[i]);
     for (let i = binIds.length; i < 50; i++) padded[i] = SENTINEL;
 
     const data = Buffer.concat([
-      ixDiscriminator('place_tranche'),
-      Buffer.concat(padded.map(b => leI64(b))),
+      ixDiscriminator("place_tranche"),
+      Buffer.concat(padded.map((b) => leI64(b))),
     ]);
 
-    const binArrayKeys = remainingBinArrays.map(pubkey => ({
+    const binArrayKeys = remainingBinArrays.map((pubkey) => ({
       pubkey,
       isSigner: false,
       isWritable: true,
@@ -315,18 +357,22 @@ export class VaultSdk {
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
-        { pubkey: accounts.vault,                     isSigner: false, isWritable: true },
-        { pubkey: accounts.vaultAta,                  isSigner: false, isWritable: true },
-        { pubkey: accounts.limitOrder,                isSigner: false, isWritable: true },
-        { pubkey: accounts.crank,                     isSigner: true,  isWritable: true },
-        { pubkey: accounts.dlmmProgram,               isSigner: false, isWritable: false },
-        { pubkey: accounts.lbPair,                    isSigner: false, isWritable: true },
-        { pubkey: accounts.binArrayBitmapExtension,   isSigner: false, isWritable: true },
-        { pubkey: accounts.reserve,                   isSigner: false, isWritable: true },
-        { pubkey: accounts.tokenMint,                 isSigner: false, isWritable: true },
-        { pubkey: accounts.eventAuthority,            isSigner: false, isWritable: false },
-        { pubkey: accounts.tokenProgram,              isSigner: false, isWritable: false },
-        { pubkey: accounts.systemProgram,             isSigner: false, isWritable: false },
+        { pubkey: accounts.vault, isSigner: false, isWritable: true },
+        { pubkey: accounts.vaultAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.limitOrder, isSigner: false, isWritable: true },
+        { pubkey: accounts.crank, isSigner: true, isWritable: true },
+        { pubkey: accounts.dlmmProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.lbPair, isSigner: false, isWritable: true },
+        {
+          pubkey: accounts.binArrayBitmapExtension,
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: accounts.reserve, isSigner: false, isWritable: true },
+        { pubkey: accounts.tokenMint, isSigner: false, isWritable: true },
+        { pubkey: accounts.eventAuthority, isSigner: false, isWritable: false },
+        { pubkey: accounts.tokenProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.systemProgram, isSigner: false, isWritable: false },
         ...binArrayKeys,
       ],
       data,
@@ -338,12 +384,9 @@ export class VaultSdk {
     binIds: number[],
     remainingBinArrays: PublicKey[],
   ): TransactionInstruction {
-    const data = Buffer.concat([
-      ixDiscriminator('claim_fees'),
-      vecI64(binIds),
-    ]);
+    const data = Buffer.concat([ixDiscriminator("claim_fees"), vecI64(binIds)]);
 
-    const binArrayKeys = remainingBinArrays.map(pubkey => ({
+    const binArrayKeys = remainingBinArrays.map((pubkey) => ({
       pubkey,
       isSigner: false,
       isWritable: true,
@@ -352,22 +395,26 @@ export class VaultSdk {
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
-        { pubkey: accounts.vault,                     isSigner: false, isWritable: true },
-        { pubkey: accounts.vaultAta,                  isSigner: false, isWritable: true },
-        { pubkey: accounts.crank,                     isSigner: true,  isWritable: true },
-        { pubkey: accounts.dlmmProgram,               isSigner: false, isWritable: false },
-        { pubkey: accounts.lbPair,                    isSigner: false, isWritable: true },
-        { pubkey: accounts.binArrayBitmapExtension,   isSigner: false, isWritable: true },
-        { pubkey: accounts.reserveX,                  isSigner: false, isWritable: true },
-        { pubkey: accounts.reserveY,                  isSigner: false, isWritable: true },
-        { pubkey: accounts.tokenXMint,                isSigner: false, isWritable: false },
-        { pubkey: accounts.tokenYMint,                isSigner: false, isWritable: false },
-        { pubkey: accounts.limitOrder,                isSigner: false, isWritable: true },
-        { pubkey: accounts.ownerTokenX,               isSigner: false, isWritable: true },
-        { pubkey: accounts.ownerTokenY,               isSigner: false, isWritable: true },
-        { pubkey: accounts.eventAuthority,            isSigner: false, isWritable: false },
-        { pubkey: accounts.tokenProgram,              isSigner: false, isWritable: false },
-        { pubkey: accounts.memoProgram,               isSigner: false, isWritable: false },
+        { pubkey: accounts.vault, isSigner: false, isWritable: true },
+        { pubkey: accounts.vaultAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.crank, isSigner: true, isWritable: true },
+        { pubkey: accounts.dlmmProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.lbPair, isSigner: false, isWritable: true },
+        {
+          pubkey: accounts.binArrayBitmapExtension,
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: accounts.reserveX, isSigner: false, isWritable: true },
+        { pubkey: accounts.reserveY, isSigner: false, isWritable: true },
+        { pubkey: accounts.tokenXMint, isSigner: false, isWritable: false },
+        { pubkey: accounts.tokenYMint, isSigner: false, isWritable: false },
+        { pubkey: accounts.limitOrder, isSigner: false, isWritable: true },
+        { pubkey: accounts.ownerTokenX, isSigner: false, isWritable: true },
+        { pubkey: accounts.ownerTokenY, isSigner: false, isWritable: true },
+        { pubkey: accounts.eventAuthority, isSigner: false, isWritable: false },
+        { pubkey: accounts.tokenProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.memoProgram, isSigner: false, isWritable: false },
         ...binArrayKeys,
       ],
       data,
@@ -379,28 +426,32 @@ export class VaultSdk {
       programId: this.programId,
       keys: [
         { pubkey: accounts.vault, isSigner: false, isWritable: true },
-        { pubkey: accounts.owner, isSigner: true,  isWritable: true },
+        { pubkey: accounts.owner, isSigner: true, isWritable: true },
       ],
-      data: ixDiscriminator('cancel'),
+      data: ixDiscriminator("cancel"),
     });
   }
 
-  withdrawIx(accounts: WithdrawAccounts, amount: bigint): TransactionInstruction {
-    const data = Buffer.concat([
-      ixDiscriminator('withdraw'),
-      leU64(amount),
-    ]);
+  withdrawIx(
+    accounts: WithdrawAccounts,
+    amount: bigint,
+  ): TransactionInstruction {
+    const data = Buffer.concat([ixDiscriminator("withdraw"), leU64(amount)]);
     return new TransactionInstruction({
       programId: this.programId,
       keys: [
-        { pubkey: accounts.vault,                 isSigner: false, isWritable: true },
-        { pubkey: accounts.owner,                 isSigner: true,  isWritable: true },
-        { pubkey: accounts.mint,                  isSigner: false, isWritable: false },
-        { pubkey: accounts.ownerAta,              isSigner: false, isWritable: true },
-        { pubkey: accounts.vaultAta,              isSigner: false, isWritable: true },
-        { pubkey: accounts.tokenProgram,          isSigner: false, isWritable: false },
-        { pubkey: accounts.systemProgram,         isSigner: false, isWritable: false },
-        { pubkey: accounts.associatedTokenProgram,isSigner: false, isWritable: false },
+        { pubkey: accounts.vault, isSigner: false, isWritable: true },
+        { pubkey: accounts.owner, isSigner: true, isWritable: true },
+        { pubkey: accounts.mint, isSigner: false, isWritable: false },
+        { pubkey: accounts.ownerAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.vaultAta, isSigner: false, isWritable: true },
+        { pubkey: accounts.tokenProgram, isSigner: false, isWritable: false },
+        { pubkey: accounts.systemProgram, isSigner: false, isWritable: false },
+        {
+          pubkey: accounts.associatedTokenProgram,
+          isSigner: false,
+          isWritable: false,
+        },
       ],
       data,
     });
@@ -427,32 +478,52 @@ export class VaultSdk {
    * state; doing so races with other cranks.
    */
   async fetchVault(vault: PublicKey): Promise<OnChainVault | null> {
-    const info = await this.connection.getAccountInfo(vault, 'confirmed');
+    const info = await this.connection.getAccountInfo(vault, "confirmed");
     if (!info) return null;
     const data = info.data;
-    if (data.length < 8 + 32 + 8 + 32 + 32 + 1 + 2 + 2 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 1) {
+    if (
+      data.length <
+      8 + 32 + 8 + 32 + 32 + 1 + 2 + 2 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 1
+    ) {
       throw new Error(`vault account too small: ${data.length} bytes`);
     }
     let o = 8; // skip discriminator
-    const owner = new PublicKey(data.subarray(o, o + 32)); o += 32;
-    const nonce = data.readBigUInt64LE(o); o += 8;
-    const pool = new PublicKey(data.subarray(o, o + 32)); o += 32;
-    const mint = new PublicKey(data.subarray(o, o + 32)); o += 32;
-    const side: 'bid' | 'ask' = data[o] === 1 ? 'ask' : 'bid'; o += 1;
-    const tranches = data.readUInt16LE(o); o += 2;
-    const tranchesPlaced = data.readUInt16LE(o); o += 2;
-    const intervalSeconds = data.readBigUInt64LE(o); o += 8;
-    const minBinId = data.readBigInt64LE(o); o += 8;
-    const maxBinId = data.readBigInt64LE(o); o += 8;
-    const trancheAmount = data.readBigUInt64LE(o); o += 8;
-    const totalCap = data.readBigUInt64LE(o); o += 8;
-    const amountPlaced = data.readBigUInt64LE(o); o += 8;
-    const lastPlacedAt = data.readBigInt64LE(o); o += 8;
-    const hasPending = data[o]; o += 1;
+    const owner = new PublicKey(data.subarray(o, o + 32));
+    o += 32;
+    const nonce = data.readBigUInt64LE(o);
+    o += 8;
+    const pool = new PublicKey(data.subarray(o, o + 32));
+    o += 32;
+    const mint = new PublicKey(data.subarray(o, o + 32));
+    o += 32;
+    const side: "bid" | "ask" = data[o] === 1 ? "ask" : "bid";
+    o += 1;
+    const tranches = data.readUInt16LE(o);
+    o += 2;
+    const tranchesPlaced = data.readUInt16LE(o);
+    o += 2;
+    const intervalSeconds = data.readBigUInt64LE(o);
+    o += 8;
+    const minBinId = data.readBigInt64LE(o);
+    o += 8;
+    const maxBinId = data.readBigInt64LE(o);
+    o += 8;
+    const trancheAmount = data.readBigUInt64LE(o);
+    o += 8;
+    const totalCap = data.readBigUInt64LE(o);
+    o += 8;
+    const amountPlaced = data.readBigUInt64LE(o);
+    o += 8;
+    const lastPlacedAt = data.readBigInt64LE(o);
+    o += 8;
+    const hasPending = data[o];
+    o += 1;
     let pending: PendingLimitOrder | null = null;
     if (hasPending === 1) {
-      const address = new PublicKey(data.subarray(o, o + 32)); o += 32;
-      const vecLen = data.readUInt32LE(o); o += 4;
+      const address = new PublicKey(data.subarray(o, o + 32));
+      o += 32;
+      const vecLen = data.readUInt32LE(o);
+      o += 4;
       const binIds: number[] = [];
       for (let i = 0; i < vecLen; i++) {
         binIds.push(Number(data.readBigInt64LE(o)));
@@ -460,14 +531,27 @@ export class VaultSdk {
       }
       pending = { address, binIds };
     }
-    const status = data[o] as 0 | 1 | 2 | 3; o += 1;
+    const status = data[o] as 0 | 1 | 2 | 3;
+    o += 1;
     const bump = data[o];
     return {
-      owner, nonce, pool, mint, side,
-      tranches, tranchesPlaced,
-      intervalSeconds, minBinId, maxBinId,
-      trancheAmount, totalCap, amountPlaced, lastPlacedAt,
-      pending, status, bump,
+      owner,
+      nonce,
+      pool,
+      mint,
+      side,
+      tranches,
+      tranchesPlaced,
+      intervalSeconds,
+      minBinId,
+      maxBinId,
+      trancheAmount,
+      totalCap,
+      amountPlaced,
+      lastPlacedAt,
+      pending,
+      status,
+      bump,
     };
   }
 
@@ -484,7 +568,7 @@ export class VaultSdk {
   /** Derive the DLMM event-authority PDA. */
   dlmmEventAuthority(): PublicKey {
     return PublicKey.findProgramAddressSync(
-      [Buffer.from('__event_authority')],
+      [Buffer.from("__event_authority")],
       DLMM_PROGRAM,
     )[0];
   }
@@ -507,15 +591,15 @@ export class VaultSdk {
     trancheIdx: number;
     binIds: number[];
     lbPair: PublicKey;
-    reserve: PublicKey;       // reserve for the token being sold
-    tokenMint: PublicKey;     // the token being sold (must match vault.mint)
+    reserve: PublicKey; // reserve for the token being sold
+    tokenMint: PublicKey; // the token being sold (must match vault.mint)
   }): Promise<Transaction> {
     const vault = vaultPda(opts.owner, opts.vaultNonce);
     const vaultAta = getAssociatedTokenAddressSync(opts.tokenMint, vault, true);
     const limitOrder = limitOrderPda(vault, opts.trancheIdx);
     const binArrays = resolveBinArrayPubkeys(opts.lbPair, opts.binIds);
     const bitmapExt = resolveBitmapExtension(opts.lbPair, opts.binIds);
-    const eventAuth  = this.dlmmEventAuthority();
+    const eventAuth = this.dlmmEventAuthority();
 
     const ix = this.placeTrancheIx(
       {
@@ -536,7 +620,8 @@ export class VaultSdk {
       binArrays,
     );
 
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+    const { blockhash, lastValidBlockHeight } =
+      await this.connection.getLatestBlockhash();
     const tx = new Transaction({
       blockhash,
       lastValidBlockHeight,
@@ -562,11 +647,19 @@ export class VaultSdk {
     tokenYMint: PublicKey;
   }): Promise<Transaction> {
     const vault = vaultPda(opts.owner, opts.vaultNonce);
-    const vaultAtaX = getAssociatedTokenAddressSync(opts.tokenXMint, vault, true);
-    const vaultAtaY = getAssociatedTokenAddressSync(opts.tokenYMint, vault, true);
+    const vaultAtaX = getAssociatedTokenAddressSync(
+      opts.tokenXMint,
+      vault,
+      true,
+    );
+    const vaultAtaY = getAssociatedTokenAddressSync(
+      opts.tokenYMint,
+      vault,
+      true,
+    );
     const binArrays = resolveBinArrayPubkeys(opts.lbPair, opts.binIds);
     const bitmapExt = resolveBitmapExtension(opts.lbPair, opts.binIds);
-    const eventAuth  = this.dlmmEventAuthority();
+    const eventAuth = this.dlmmEventAuthority();
 
     const ix = this.claimFeesIx(
       {
@@ -591,8 +684,13 @@ export class VaultSdk {
       binArrays,
     );
 
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
-    return new Transaction({ blockhash, lastValidBlockHeight, feePayer: opts.crank.publicKey }).add(ix);
+    const { blockhash, lastValidBlockHeight } =
+      await this.connection.getLatestBlockhash();
+    return new Transaction({
+      blockhash,
+      lastValidBlockHeight,
+      feePayer: opts.crank.publicKey,
+    }).add(ix);
   }
 }
 

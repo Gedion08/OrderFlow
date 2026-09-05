@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { expect } from "chai";
 import { Orderflow } from "../target/types/orderflow";
+import idl from "../target/idl/orderflow.json";
 
 const { SystemProgram } = anchor.web3;
 
@@ -11,7 +12,7 @@ const PROGRAM_ID = new anchor.web3.PublicKey("7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PC
 describe("orderflow", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  const program = anchor.workspace.Orderflow as Program<Orderflow>;
+  const program = new Program(idl as any, PROGRAM_ID, provider) as Program<Orderflow>;
 
   const owner = provider.wallet.publicKey;
   const nonce = new anchor.BN(Date.now() % 0xffffffff);

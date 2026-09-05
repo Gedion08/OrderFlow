@@ -178,7 +178,7 @@ export type Orderflow = {
         },
         {
           "name": "dlmmProgram",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -260,7 +260,7 @@ export type Orderflow = {
         },
         {
           "name": "dlmmProgram",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -622,6 +622,31 @@ export type Orderflow = {
       "code": 6012,
       "name": "MintMismatch",
       "msg": "Token mint does not match the vault's deposited mint"
+    },
+    {
+      "code": 6013,
+      "name": "NoPendingOrder",
+      "msg": "The vault has no pending limit order"
+    },
+    {
+      "code": 6014,
+      "name": "WrongPendingOrder",
+      "msg": "The supplied limit order is not the vault's pending order"
+    },
+    {
+      "code": 6015,
+      "name": "BinIdsMismatch",
+      "msg": "The supplied bin ids do not match the pending order"
+    },
+    {
+      "code": 6016,
+      "name": "PendingOrderOpen",
+      "msg": "The pending order must be settled before this operation"
+    },
+    {
+      "code": 6017,
+      "name": "PoolMismatch",
+      "msg": "The supplied pool does not match the vault's configured pool"
     }
   ]
 };
@@ -806,7 +831,7 @@ export const IDL: Orderflow = {
         },
         {
           "name": "dlmmProgram",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -888,7 +913,7 @@ export const IDL: Orderflow = {
         },
         {
           "name": "dlmmProgram",
-          "isMut": true,
+          "isMut": false,
           "isSigner": false
         },
         {
@@ -1250,6 +1275,31 @@ export const IDL: Orderflow = {
       "code": 6012,
       "name": "MintMismatch",
       "msg": "Token mint does not match the vault's deposited mint"
+    },
+    {
+      "code": 6013,
+      "name": "NoPendingOrder",
+      "msg": "The vault has no pending limit order"
+    },
+    {
+      "code": 6014,
+      "name": "WrongPendingOrder",
+      "msg": "The supplied limit order is not the vault's pending order"
+    },
+    {
+      "code": 6015,
+      "name": "BinIdsMismatch",
+      "msg": "The supplied bin ids do not match the pending order"
+    },
+    {
+      "code": 6016,
+      "name": "PendingOrderOpen",
+      "msg": "The pending order must be settled before this operation"
+    },
+    {
+      "code": 6017,
+      "name": "PoolMismatch",
+      "msg": "The supplied pool does not match the vault's configured pool"
     }
   ]
 };

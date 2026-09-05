@@ -7,5 +7,16 @@
     "build": "anchor build",
     "test": "anchor test",
     "typecheck": "echo \"rust program — see anchor/README for anchor build\""
+  },
+  "devDependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@solana/web3.js": "^1.91.8",
+    "@types/mocha": "^10.0.10",
+    "mocha": "^10.7.3",
+    "rpc-websockets": "^7.11.2",
+    "ts-mocha": "^10.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "uuid": "^8.3.2"
   }
 }

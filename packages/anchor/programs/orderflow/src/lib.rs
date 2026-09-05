@@ -154,6 +154,7 @@ pub mod orderflow {
                 ctx.accounts.token_mint.key() == vault.mint,
                 ErrorCode::MintMismatch
             );
+            require!(ctx.accounts.lb_pair.key() == vault.pool, ErrorCode::PoolMismatch);
             // content guards — need vault fields
             let bins: Vec<i64> = bin_ids.iter().copied()
                 .take_while(|b| *b != i64::MIN)
@@ -213,11 +214,22 @@ pub mod orderflow {
         // `ctx.accounts`. This is the Anchor-idiomatic way and the
         // returned `Vec<AccountInfo<'info>>` is rooted in the original
         // account info slice the runtime handed us.
-        let mut account_infos: Vec<AccountInfo> = ctx.accounts.to_account_infos();
-        // bin arrays for the requested bins (parent-transaction remaining accounts)
-        for a in ctx.remaining_accounts.iter() {
-            account_infos.push((*a).clone());
-        }
+        let mut account_infos = vec![
+            ctx.accounts.lb_pair.to_account_info(),
+            ctx.accounts.bin_array_bitmap_extension.to_account_info(),
+            ctx.accounts.reserve.to_account_info(),
+            ctx.accounts.token_mint.to_account_info(),
+            ctx.accounts.limit_order.to_account_info(),
+            ctx.accounts.crank.to_account_info(),
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.vault_ata.to_account_info(),
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.event_authority.to_account_info(),
+            ctx.accounts.dlmm_program.to_account_info(),
+        ];
+        account_infos.extend(ctx.remaining_accounts.iter().cloned());
 
         // The vault PDA is seeded `(b"vault", owner, nonce)`. We have the
         // owner; read the nonce directly from the account data (avoiding a
@@ -235,11 +247,13 @@ pub mod orderflow {
         };
         let owner_bytes: [u8; 32] = vault_owner.to_bytes();
         let seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
+        let tranche_bytes: [u8; 2] = tranche_idx.to_le_bytes();
+        let limit_order_seeds: [&[u8]; 3] = [b"limit_order", vault_key.as_ref(), &tranche_bytes];
 
         invoke_signed(
             &place_limit_order_instruction(&*ctx.accounts, side, limit_order, &bins, vault_key),
             account_infos.as_slice(),
-            &[&seeds],
+            &[&seeds, &limit_order_seeds],
         )?;
 
         // Touch tranche_amount + current_placed to keep the linter happy
@@ -265,11 +279,15 @@ pub mod orderflow {
         ctx: Context<'a, 'a, 'a, 'info, ClaimFees<'info>>,
         bin_ids: Vec<i64>,
     ) -> Result<()> where 'info: 'a {
-        // Read fields we need from the vault first, then drop the borrow.
-        let (owner, nonce) = {
+        // The latest open order is the only order this vault can settle.
+        let (owner, nonce, pending_bins) = {
             let v = &ctx.accounts.vault;
-            (v.owner, v.nonce)
+            let pending = v.pending_limit_order.as_ref().ok_or_else(|| error!(ErrorCode::NoPendingOrder))?;
+            require!(pending.address == ctx.accounts.limit_order.key(), ErrorCode::WrongPendingOrder);
+            require!(pending.bin_ids == bin_ids, ErrorCode::BinIdsMismatch);
+            (v.owner, v.nonce, pending.bin_ids.clone())
         };
+        require!(!pending_bins.is_empty(), ErrorCode::NoBins);
         let owner_bytes: [u8; 32] = owner.to_bytes();
         let nonce_bytes: [u8; 8] = nonce.to_le_bytes();
         let signer_seeds: [&[u8]; 3] = [b"vault", &owner_bytes, &nonce_bytes];
@@ -279,6 +297,14 @@ pub mod orderflow {
             &cancel_limit_order_accounts(&*ctx.accounts),
             &[&signer_seeds],
         )?;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.pending_limit_order = None;
+        vault.status = if vault.tranches_placed >= vault.tranches {
+            VaultStatus::Completed
+        } else {
+            VaultStatus::Active
+        };
         Ok(())
     }
 
@@ -287,6 +313,7 @@ pub mod orderflow {
     /// cancelled so no further tranches can be placed.
     pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
+        require!(vault.pending_limit_order.is_none(), ErrorCode::PendingOrderOpen);
         vault.status = VaultStatus::Cancelled;
         Ok(())
     }
@@ -299,6 +326,7 @@ pub mod orderflow {
         amount: u64,
     ) -> Result<()> where 'info: 'a {
         require!(amount > 0, ErrorCode::ZeroAmount);
+        require!(ctx.accounts.vault.pending_limit_order.is_none(), ErrorCode::PendingOrderOpen);
 
         // Build the PDA signer seeds inline. `vault.nonce.to_le_bytes()` would
         // create a temporary whose reference does not escape the expression,
@@ -362,7 +390,8 @@ pub struct Deposit<'info> {
     pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: validated against `vault.mint` in the instruction handler.
+    /// CHECK: the address constraint enforces the vault's configured mint.
+    #[account(address = vault.mint)]
     pub mint: AccountInfo<'info>,
     #[account(
         mut,
@@ -409,8 +438,8 @@ pub struct PlaceTranche<'info> {
     #[account(mut)]
     pub crank: Signer<'info>,
     // ---- DLMM CPI accounts (fixed set) -------------------------------------
-    /// CHECK: DLMM program id — passthrough, validated by DLMM.
-    #[account(mut)]
+    /// CHECK: fixed DLMM program.
+    #[account(address = DLMM_PROGRAM)]
     pub dlmm_program: AccountInfo<'info>,
     /// CHECK: LB pair account — passthrough, validated by DLMM.
     #[account(mut)]
@@ -448,8 +477,8 @@ pub struct ClaimFees<'info> {
     pub vault_ata: Account<'info, TokenAccount>,
     #[account(mut)]
     pub crank: Signer<'info>,
-    /// CHECK: DLMM program id — passthrough, validated by DLMM.
-    #[account(mut)]
+    /// CHECK: fixed DLMM program.
+    #[account(address = DLMM_PROGRAM)]
     pub dlmm_program: AccountInfo<'info>,
     /// CHECK: LB pair account — passthrough, validated by DLMM.
     #[account(mut)]
@@ -471,16 +500,23 @@ pub struct ClaimFees<'info> {
     /// handler against the stored `pending_limit_order` address.
     #[account(mut)]
     pub limit_order: AccountInfo<'info>,
-    /// CHECK: owner token X ATA — passthrough, validated by DLMM.
-    #[account(mut)]
-    pub owner_token_x: AccountInfo<'info>,
-    /// CHECK: owner token Y ATA — passthrough, validated by DLMM.
-    #[account(mut)]
-    pub owner_token_y: AccountInfo<'info>,
+    #[account(
+        mut,
+        associated_token::mint = token_x_mint,
+        associated_token::authority = vault
+    )]
+    pub owner_token_x: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        associated_token::mint = token_y_mint,
+        associated_token::authority = vault
+    )]
+    pub owner_token_y: Account<'info, TokenAccount>,
     /// CHECK: derived `__event_authority` PDA of the DLMM program.
     pub event_authority: AccountInfo<'info>,
     pub token_program: Program<'info, Token>,
     /// CHECK: Memo program id fixed by DLMM.
+    #[account(address = solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"))]
     pub memo_program: AccountInfo<'info>,
 }
 
@@ -508,7 +544,8 @@ pub struct Withdraw<'info> {
     pub vault: Account<'info, StrategyVault>,
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: validated against `vault.mint` in the instruction handler.
+    /// CHECK: the address constraint enforces the vault's configured mint.
+    #[account(address = vault.mint)]
     pub mint: AccountInfo<'info>,
     #[account(
         mut,
@@ -754,4 +791,14 @@ pub enum ErrorCode {
     WrongLimitOrder,
     #[msg("Token mint does not match the vault's deposited mint")]
     MintMismatch,
+    #[msg("The vault has no pending limit order")]
+    NoPendingOrder,
+    #[msg("The supplied limit order is not the vault's pending order")]
+    WrongPendingOrder,
+    #[msg("The supplied bin ids do not match the pending order")]
+    BinIdsMismatch,
+    #[msg("The pending order must be settled before this operation")]
+    PendingOrderOpen,
+    #[msg("The supplied pool does not match the vault's configured pool")]
+    PoolMismatch,
 }

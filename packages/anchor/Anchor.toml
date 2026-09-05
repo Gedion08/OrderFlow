@@ -9,4 +9,4 @@ wallet = "~/.config/solana/id.json"
 orderflow = "7WNQhMKbKhZGYw3zYc77KAHS47hcxss2PCkztQui51fR"
 
 [scripts]
-test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "node ./run-tests.cjs"
